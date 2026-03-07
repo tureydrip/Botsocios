@@ -38,7 +38,8 @@ const adminKeyboard = {
         keyboard: [
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
             [{ text: '💰 Añadir Saldo' }, { text: '📢 Mensaje Global' }],
-            [{ text: '❌ Cancelar Acción' }]
+            // --- NUEVO: Botón de reembolsos ---
+            [{ text: '🔄 Revisar Reembolsos' }, { text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -76,7 +77,7 @@ bot.onText(/\/start/, async (msg) => {
 // 2. MANEJADOR DE MENSAJES (Texto y Fotos)
 bot.on('message', async (msg) => {
     if (msg.text === '/start') return;
-    if (!msg.text && !msg.photo) return; // Solo permitir textos y fotos
+    if (!msg.text && !msg.photo) return;
 
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
@@ -95,14 +96,12 @@ bot.on('message', async (msg) => {
 
     // --- MANEJO DE ENVÍO DE COMPROBANTES (FOTOS) ---
     if (msg.photo && userStates[chatId] && userStates[chatId].step === 'WAITING_FOR_RECEIPT') {
-        const stateData = userStates[chatId].data; // --- NUEVO: Extraemos todos los datos guardados ---
+        const stateData = userStates[chatId].data; 
         const username = stateData.username;
         const amount = stateData.amount;
         const targetWebUid = stateData.webUid;
         const fileId = msg.photo[msg.photo.length - 1].file_id; 
         
-        // --- NUEVO: Teclado para el Admin ---
-        // Usamos IDs cortos (ok_rech y no_rech) para no exceder el límite de caracteres de Telegram
         const adminConfirmKeyboard = {
             inline_keyboard: [
                 [{ text: '✅ Confirmar', callback_data: `ok_rech_${targetWebUid}_${amount}_${tgId}` }],
@@ -113,7 +112,7 @@ bot.on('message', async (msg) => {
         bot.sendPhoto(ADMIN_ID, fileId, {
             caption: `💳 *NUEVO COMPROBANTE DE PAGO*\n\n👤 Usuario: ${username}\n🆔 ID Telegram: \`${tgId}\`\n💰 Monto Solicitado: *$${amount} USD*`,
             parse_mode: 'Markdown',
-            reply_markup: adminConfirmKeyboard // --- NUEVO: Adjuntamos los botones ---
+            reply_markup: adminConfirmKeyboard 
         });
         
         userStates[chatId] = null; 
@@ -125,6 +124,62 @@ bot.on('message', async (msg) => {
     // --- FLUJOS DE ESTADO ---
     if (userStates[chatId]) {
         const state = userStates[chatId];
+
+        // --- NUEVO: FLUJO PARA BUSCAR LA KEY PARA REEMBOLSO ---
+        if (state.step === 'WAITING_FOR_REFUND_KEY') {
+            const searchKey = text.trim();
+            bot.sendMessage(chatId, '🔎 Buscando la Key en los registros...');
+
+            const usersSnap = await get(ref(db, 'users'));
+            let found = false;
+            let foundData = null;
+
+            if (usersSnap.exists()) {
+                usersSnap.forEach(userChild => {
+                    const uid = userChild.key;
+                    const userData = userChild.val();
+                    
+                    // Buscamos en el historial del usuario
+                    if (userData.history) {
+                        Object.keys(userData.history).forEach(histId => {
+                            const compra = userData.history[histId];
+                            if (compra.key === searchKey) {
+                                found = true;
+                                foundData = { uid: uid, username: userData.username, histId: histId, compra: compra };
+                            }
+                        });
+                    }
+                });
+            }
+
+            if (found) {
+                if (foundData.compra.refunded) {
+                    bot.sendMessage(chatId, '⚠️ *Esta Key ya fue reembolsada anteriormente.*', { parse_mode: 'Markdown' });
+                } else {
+                    const dateStr = new Date(foundData.compra.date).toLocaleString('es-CO');
+                    const msgInfo = `🧾 *INFO DE LA COMPRA ENCONTRADA*\n\n` +
+                                `👤 *Usuario:* ${foundData.username}\n` +
+                                `📦 *Producto:* ${foundData.compra.product}\n` +
+                                `🔑 *Key:* \`${foundData.compra.key}\`\n` +
+                                `💰 *Costo pagado:* $${parseFloat(foundData.compra.price).toFixed(2)} USD\n` +
+                                `📅 *Fecha:* ${dateStr}\n\n` +
+                                `¿Deseas devolverle el dinero a este usuario?`;
+
+                    // ID corto para evitar límite de carácteres de Telegram
+                    const refundKeyboard = {
+                        inline_keyboard: [
+                            [{ text: '✅ Mandar Reembolso', callback_data: `rfnd_${foundData.uid}_${foundData.histId}` }],
+                            [{ text: '❌ Cancelar', callback_data: `cancel_refund` }]
+                        ]
+                    };
+                    bot.sendMessage(chatId, msgInfo, { parse_mode: 'Markdown', reply_markup: refundKeyboard });
+                }
+            } else {
+                bot.sendMessage(chatId, '❌ No se encontró ninguna compra con esa Key en la base de datos.', adminKeyboard);
+            }
+            userStates[chatId] = null;
+            return;
+        }
 
         // FLUJO: USUARIO ESCRIBE CUÁNTO QUIERE RECARGAR
         if (state.step === 'WAITING_FOR_RECHARGE_AMOUNT') {
@@ -149,7 +204,6 @@ bot.on('message', async (msg) => {
                                 `1. Envía exactamente *$${amountCop.toLocaleString('es-CO')} COP* a Nequi: \`3214701288\`\n` +
                                 `2. Selecciona por dónde quieres enviar tu comprobante abajo:`;
 
-            // --- NUEVO: Pasamos la cantidad en el callback_data ---
             const rechargeInline = { 
                 inline_keyboard: [
                     [{ text: '💬 Enviar por WhatsApp', url: 'https://wa.me/573142369516' }],
@@ -328,6 +382,13 @@ bot.on('message', async (msg) => {
 
     // --- ACCIONES ADMIN (BOTONES DE ABAJO) ---
     if (tgId === ADMIN_ID) {
+        
+        // --- NUEVO: Iniciar flujo de reembolso ---
+        if (text === '🔄 Revisar Reembolsos') {
+            userStates[chatId] = { step: 'WAITING_FOR_REFUND_KEY', data: {} };
+            return bot.sendMessage(chatId, '🔎 *SISTEMA DE REEMBOLSOS*\n\nPor favor, pega y envía la **Key** exacta que deseas buscar y reembolsar:', { parse_mode: 'Markdown' });
+        }
+
         if (text === '📢 Mensaje Global') {
             userStates[chatId] = { step: 'WAITING_FOR_BROADCAST_MESSAGE', data: {} };
             return bot.sendMessage(chatId, '📝 *MENSAJE GLOBAL*\n\nEscribe el mensaje que quieres enviarle a **todos los usuarios** del bot:\n\n_(Puedes incluir emojis o enlaces)_', { parse_mode: 'Markdown' });
@@ -366,7 +427,61 @@ bot.on('callback_query', async (query) => {
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
 
-    // --- NUEVO: USUARIOS SOLICITAN ENVÍO DE COMPROBANTE (Captura la cantidad) ---
+    // --- NUEVO: EJECUTAR REEMBOLSO (Admin) ---
+    if (data.startsWith('rfnd_') && tgId === ADMIN_ID) {
+        const parts = data.split('_');
+        const targetUid = parts[1];
+        const histId = parts[2];
+
+        // Borrar botonera de reembolso
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+
+        const userSnap = await get(ref(db, `users/${targetUid}`));
+        if (userSnap.exists()) {
+            const userData = userSnap.val();
+            const compra = userData.history[histId];
+
+            if (compra && !compra.refunded) {
+                const currentBal = parseFloat(userData.balance || 0);
+                const price = parseFloat(compra.price || 0);
+                const nuevoSaldo = currentBal + price;
+
+                const updates = {};
+                updates[`users/${targetUid}/balance`] = nuevoSaldo;
+                updates[`users/${targetUid}/history/${histId}/refunded`] = true; // Evitar dobles reembolsos
+
+                await update(ref(db), updates);
+
+                bot.sendMessage(chatId, `✅ *Reembolso completado.* Se devolvieron $${price} USD a la cuenta de ${userData.username}.`, { parse_mode: 'Markdown' });
+
+                // Avisar al usuario del reembolso
+                const telegramAuthSnap = await get(ref(db, 'telegram_auth'));
+                let targetTgId = null;
+                if (telegramAuthSnap.exists()) {
+                    telegramAuthSnap.forEach(child => {
+                        if (child.val() === targetUid) targetTgId = child.key;
+                    });
+                }
+
+                if (targetTgId) {
+                    bot.sendMessage(targetTgId, `🔄 *REEMBOLSO APROBADO*\n\nSe te ha devuelto el dinero de la key de *${compra.product}*.\n💰 Se añadieron *$${price} USD* a tu saldo.\n💳 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
+                }
+
+            } else {
+                bot.sendMessage(chatId, '❌ Hubo un error. La compra no existe o ya fue reembolsada.');
+            }
+        } else {
+            bot.sendMessage(chatId, '❌ Usuario no encontrado en la base de datos.');
+        }
+        return;
+    }
+
+    // --- NUEVO: CANCELAR REEMBOLSO (Admin) ---
+    if (data === 'cancel_refund' && tgId === ADMIN_ID) {
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+        return bot.sendMessage(chatId, '❌ Reembolso cancelado exitosamente.');
+    }
+
     if (data.startsWith('send_receipt_')) {
         const amountRequest = parseFloat(data.split('_')[2]);
         const userSnap = await get(ref(db, `users/${webUid}`));
@@ -376,14 +491,12 @@ bot.on('callback_query', async (query) => {
         return bot.sendMessage(chatId, '📸 Por favor, envía la **foto de tu comprobante** de pago ahora mismo.\n\n_(Asegúrate de que la captura se vea clara)_', { parse_mode: 'Markdown' });
     }
 
-    // --- NUEVO: ADMIN CONFIRMA EL PAGO DESDE LA FOTO ---
     if (data.startsWith('ok_rech_') && tgId === ADMIN_ID) {
         const parts = data.split('_');
         const targetWebUid = parts[2];
         const amount = parseFloat(parts[3]);
         const targetTgId = parts[4];
 
-        // Borramos los botones del comprobante para que no lo apruebes dos veces por error
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
         bot.sendMessage(chatId, '⚙️ Acreditando saldo al usuario...');
 
@@ -399,9 +512,7 @@ bot.on('callback_query', async (query) => {
 
             await update(ref(db), updates);
 
-            // Confirmación al Admin
             bot.sendMessage(chatId, `✅ Pago aprobado. Se añadieron $${amount} USD a ${userSnap.val().username}.`);
-            // Notificación automática al Usuario
             bot.sendMessage(targetTgId, `🎉 *¡RECARGA APROBADA!*\n\nTu pago ha sido confirmado. Se han añadido *$${amount} USD* a tu cuenta.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
         } else {
             bot.sendMessage(chatId, '❌ Hubo un error buscando al usuario en Firebase.');
@@ -409,7 +520,6 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // --- NUEVO: ADMIN RECHAZA EL PAGO DESDE LA FOTO ---
     if (data.startsWith('no_rech_') && tgId === ADMIN_ID) {
         const targetTgId = data.split('_')[2];
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
@@ -448,7 +558,7 @@ bot.on('callback_query', async (query) => {
             updates[`users/${webUid}/balance`] = currentBalance - product.price; 
             
             const historyRef = push(ref(db, `users/${webUid}/history`));
-            updates[`users/${webUid}/history/${historyRef.key}`] = { product: product.name, key: keyToDeliver, price: product.price, date: Date.now() };
+            updates[`users/${webUid}/history/${historyRef.key}`] = { product: product.name, key: keyToDeliver, price: product.price, date: Date.now(), refunded: false }; // --- AÑADIDO: refunded: false por defecto ---
 
             await update(ref(db), updates);
             bot.sendMessage(chatId, `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``, { parse_mode: 'Markdown' });
