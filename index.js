@@ -18,10 +18,10 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// SISTEMA DE ESTADOS (Para evitar usar comandos)
+// SISTEMA DE ESTADOS 
 const userStates = {}; 
 
-// TECLADOS PRINCIPALES (Botones de abajo)
+// TECLADOS PRINCIPALES
 const userKeyboard = {
     reply_markup: {
         keyboard: [
@@ -33,12 +33,12 @@ const userKeyboard = {
     }
 };
 
-// TECLADO DE ADMIN (Solo botones de administrador)
 const adminKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
-            [{ text: '💰 Añadir Saldo' }, { text: '❌ Cancelar Acción' }]
+            [{ text: '💰 Añadir Saldo' }, { text: '📢 Mensaje Global' }],
+            [{ text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -56,7 +56,7 @@ async function getAuthUser(telegramId) {
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
-    userStates[chatId] = null; // Limpiar estado al iniciar
+    userStates[chatId] = null; 
 
     const webUid = await getAuthUser(tgId);
 
@@ -73,16 +73,19 @@ bot.onText(/\/start/, async (msg) => {
     bot.sendMessage(chatId, `${greeting}\nUsa los botones de abajo para navegar.`, { parse_mode: 'Markdown', ...keyboard });
 });
 
-// 2. MANEJADOR DE MENSAJES DE TEXTO (Botones de abajo y respuestas a estados)
+// 2. MANEJADOR DE MENSAJES (Texto y Fotos)
 bot.on('message', async (msg) => {
-    if (!msg.text || msg.text === '/start') return;
+    if (msg.text === '/start') return;
+    if (!msg.text && !msg.photo) return; // Solo permitir textos y fotos
 
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
-    const text = msg.text;
+    const text = msg.text || msg.caption || ''; // Tomar texto o leyenda de la foto
 
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso denegado. Escribe /start para verificar.`);
+    
+    const keyboard = (tgId === ADMIN_ID) ? adminKeyboard : userKeyboard;
 
     // --- CANCELAR CUALQUIER ACCIÓN EN CURSO ---
     if (text === '❌ Cancelar Acción') {
@@ -90,9 +93,46 @@ bot.on('message', async (msg) => {
         return bot.sendMessage(chatId, '✅ Acción cancelada. ¿Qué deseas hacer ahora?', adminKeyboard);
     }
 
-    // --- FLUJOS DE ESTADO (Cuando el bot está esperando una respuesta del admin) ---
+    // --- MANEJO DE ENVÍO DE COMPROBANTES (FOTOS) ---
+    if (msg.photo && userStates[chatId] && userStates[chatId].step === 'WAITING_FOR_RECEIPT') {
+        const username = userStates[chatId].data.username;
+        const fileId = msg.photo[msg.photo.length - 1].file_id; // Foto con mejor resolución
+        
+        bot.sendPhoto(ADMIN_ID, fileId, {
+            caption: `💳 *NUEVO COMPROBANTE DE PAGO*\n\n👤 Usuario: ${username}\n🆔 ID Telegram: \`${tgId}\``,
+            parse_mode: 'Markdown'
+        });
+        
+        userStates[chatId] = null; // Limpiar estado
+        return bot.sendMessage(chatId, '✅ Comprobante enviado exitosamente al administrador. Por favor espera a que se acredite tu saldo.', keyboard);
+    }
+
+    // Si enviaron una foto pero no estaban en proceso de comprobante, se ignora
+    if (!msg.text) return; 
+
+    // --- FLUJOS DE ESTADO ---
     if (userStates[chatId]) {
         const state = userStates[chatId];
+
+        // FLUJO: MENSAJE GLOBAL (ADMIN)
+        if (state.step === 'WAITING_FOR_BROADCAST_MESSAGE') {
+            bot.sendMessage(chatId, '⏳ Enviando mensaje a todos los usuarios...');
+            const telegramAuthSnap = await get(ref(db, 'telegram_auth'));
+            let count = 0;
+            
+            if (telegramAuthSnap.exists()) {
+                telegramAuthSnap.forEach(child => {
+                    const targetTgId = child.key;
+                    // Enviar a todos usando try-catch invisible (por si el usuario bloqueó al bot)
+                    bot.sendMessage(targetTgId, `📢 *Anuncio Oficial LUCK XIT*\n\n${text}`, { parse_mode: 'Markdown' }).catch(() => {});
+                    count++;
+                });
+            }
+            
+            bot.sendMessage(chatId, `✅ Mensaje enviado exitosamente a ${count} usuarios.`, adminKeyboard);
+            userStates[chatId] = null;
+            return;
+        }
 
         // FLUJO: AÑADIR SALDO
         if (state.step === 'ADD_BALANCE_USER') {
@@ -124,19 +164,14 @@ bot.on('message', async (msg) => {
                 
                 await update(ref(db), updates);
                 
-                // Confirmación para el Admin
                 bot.sendMessage(chatId, `✅ Saldo añadido a ${state.data.targetUser}. Nuevo saldo: $${nuevoSaldo.toFixed(2)}`, adminKeyboard);
 
-                // Notificación al usuario que recibió el saldo
                 const telegramAuthSnap = await get(ref(db, 'telegram_auth'));
                 let targetTgId = null;
                 
                 if (telegramAuthSnap.exists()) {
                     telegramAuthSnap.forEach(child => {
-                        // child.key es el ID de Telegram, child.val() es el UID de Firebase
-                        if (child.val() === foundUid) {
-                            targetTgId = child.key;
-                        }
+                        if (child.val() === foundUid) targetTgId = child.key;
                     });
                 }
 
@@ -147,7 +182,7 @@ bot.on('message', async (msg) => {
             } else {
                 bot.sendMessage(chatId, `❌ Usuario no encontrado.`, adminKeyboard);
             }
-            userStates[chatId] = null; // Fin del proceso
+            userStates[chatId] = null; 
             return;
         }
 
@@ -203,8 +238,13 @@ bot.on('message', async (msg) => {
     }
 
     if (text === '💳 Recargas') {
-        const rechargeInline = { inline_keyboard: [[{ text: '💬 Enviar Comprobante a WhatsApp', url: 'https://wa.me/573142369516' }]] };
-        return bot.sendMessage(chatId, `💳 *RECARGAS*\n\n1. Envía a Nequi: 3214701288\n2. Toca el botón de abajo para reportarlo.`, { parse_mode: 'Markdown', reply_markup: rechargeInline });
+        const rechargeInline = { 
+            inline_keyboard: [
+                [{ text: '💬 Enviar por WhatsApp', url: 'https://wa.me/573142369516' }],
+                [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: 'send_receipt' }]
+            ] 
+        };
+        return bot.sendMessage(chatId, `💳 *RECARGAS*\n\n1. Envía a Nequi: 3214701288\n2. Selecciona por dónde quieres enviar tu comprobante:`, { parse_mode: 'Markdown', reply_markup: rechargeInline });
     }
 
     if (text === '🛒 Tienda') {
@@ -226,6 +266,11 @@ bot.on('message', async (msg) => {
 
     // --- ACCIONES ADMIN (BOTONES DE ABAJO) ---
     if (tgId === ADMIN_ID) {
+        if (text === '📢 Mensaje Global') {
+            userStates[chatId] = { step: 'WAITING_FOR_BROADCAST_MESSAGE', data: {} };
+            return bot.sendMessage(chatId, '📝 *MENSAJE GLOBAL*\n\nEscribe el mensaje que quieres enviarle a **todos los usuarios** del bot:\n\n_(Puedes incluir emojis o enlaces)_', { parse_mode: 'Markdown' });
+        }
+
         if (text === '💰 Añadir Saldo') {
             userStates[chatId] = { step: 'ADD_BALANCE_USER', data: {} };
             return bot.sendMessage(chatId, 'Escribe el **Nombre de Usuario** exacto al que deseas añadir saldo:', { parse_mode: 'Markdown' });
@@ -249,7 +294,7 @@ bot.on('message', async (msg) => {
     }
 });
 
-// 3. MANEJADOR DE BOTONES EN LÍNEA (Compras y Selección de Stock)
+// 3. MANEJADOR DE BOTONES EN LÍNEA (Callback Queries)
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const tgId = query.from.id;
@@ -258,6 +303,15 @@ bot.on('callback_query', async (query) => {
 
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
+
+    // USUARIOS: SOLICITAR ENVÍO DE COMPROBANTE
+    if (data === 'send_receipt') {
+        const userSnap = await get(ref(db, `users/${webUid}`));
+        const username = userSnap.val().username;
+        
+        userStates[chatId] = { step: 'WAITING_FOR_RECEIPT', data: { username: username } };
+        return bot.sendMessage(chatId, '📸 Por favor, envía la **foto de tu comprobante** de pago ahora mismo.\n\n_(Asegúrate de que la captura se vea clara)_', { parse_mode: 'Markdown' });
+    }
 
     // ADMIN: SELECCIÓN DE PRODUCTO PARA AÑADIR STOCK
     if (data.startsWith('stock_') && tgId === ADMIN_ID) {
