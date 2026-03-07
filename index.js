@@ -1,8 +1,15 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { initializeApp } = require('firebase/app');
 const { getDatabase, ref, get, update, push, set } = require('firebase/database');
+const express = require('express');
 
-// CONFIGURACIÓN
+// --- 1. MINI SERVIDOR PARA RAILWAY (Evita el Crash) ---
+const appExpress = express();
+const PORT = process.env.PORT || 3000;
+appExpress.get('/', (req, res) => res.send('LUCK XIT GALAXY BOT ONLINE 🚀'));
+appExpress.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
+
+// --- 2. CONFIGURACIÓN ---
 const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ';
 const bot = new TelegramBot(token, { polling: true });
 const ADMIN_ID = 7710633235; 
@@ -18,18 +25,17 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// SISTEMA DE ESTADOS (Para evitar usar comandos)
+// Memoria temporal para procesos (Admin/Usuario)
 const userStates = {}; 
 
-// TECLADOS PRINCIPALES (Botones de abajo)
+// --- 3. TECLADOS DE ABAJO (REPLY KEYBOARDS) ---
 const userKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
             [{ text: '💳 Recargas' }]
         ],
-        resize_keyboard: true,
-        is_persistent: true
+        resize_keyboard: true, is_persistent: true
     }
 };
 
@@ -37,44 +43,39 @@ const adminKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }],
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
             [{ text: '💰 Añadir Saldo' }, { text: '❌ Cancelar Acción' }]
         ],
-        resize_keyboard: true,
-        is_persistent: true
+        resize_keyboard: true, is_persistent: true
     }
 };
 
-// MIDDLEWARE: Verifica si el usuario está autorizado en la web
+// Función para verificar si el ID de Telegram está autorizado en la Web
 async function getAuthUser(telegramId) {
     const authSnap = await get(ref(db, `telegram_auth/${telegramId}`));
-    if (authSnap.exists()) return authSnap.val();
-    return null;
+    return authSnap.exists() ? authSnap.val() : null;
 }
 
-// 1. INICIO OBLIGATORIO DE TELEGRAM
+// --- 4. COMANDO INICIAL ---
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
-    userStates[chatId] = null; // Limpiar estado al iniciar
+    userStates[chatId] = null; 
 
     const webUid = await getAuthUser(tgId);
 
     if (!webUid) {
-        const textoBloqueo = `🛑 *ACCESO DENEGADO*\n\nTu dispositivo no está vinculado a una cuenta web.\n\n🔑 *TU ID DE TELEGRAM ES:* \`${tgId}\`\n\nVe a la web, vincula tu cuenta y vuelve a escribir /start.`;
-        return bot.sendMessage(chatId, textoBloqueo, { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, `🛑 *ACCESO DENEGADO*\n\nTu ID \`${tgId}\` no está autorizado.\n\nVe a la web, sección "Autorizar Telegram", pega tu ID y vuelve a pulsar /start.`, { parse_mode: 'Markdown' });
     }
 
     const userSnap = await get(ref(db, `users/${webUid}`));
     const webUser = userSnap.val();
     const keyboard = (tgId === ADMIN_ID) ? adminKeyboard : userKeyboard;
-    const greeting = (tgId === ADMIN_ID) ? `👑 ¡Bienvenido Admin Supremo, *${webUser.username}*!` : `🌌 Bienvenido a LUCK XIT, *${webUser.username}*.`;
 
-    bot.sendMessage(chatId, `${greeting}\nUsa los botones de abajo para navegar.`, { parse_mode: 'Markdown', ...keyboard });
+    bot.sendMessage(chatId, `🌌 *LUCK XIT GALAXY*\n\nBienvenido, *${webUser.username}*.\nSincronización web activa 🟢`, { parse_mode: 'Markdown', ...keyboard });
 });
 
-// 2. MANEJADOR DE MENSAJES DE TEXTO (Botones de abajo y respuestas a estados)
+// --- 5. LÓGICA DE MENSAJES ---
 bot.on('message', async (msg) => {
     if (!msg.text || msg.text === '/start') return;
 
@@ -83,221 +84,155 @@ bot.on('message', async (msg) => {
     const text = msg.text;
 
     const webUid = await getAuthUser(tgId);
-    if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso denegado. Escribe /start para verificar.`);
+    if (!webUid) return;
 
-    // --- CANCELAR CUALQUIER ACCIÓN EN CURSO ---
+    // BOTÓN: CANCELAR
     if (text === '❌ Cancelar Acción') {
         userStates[chatId] = null;
-        return bot.sendMessage(chatId, '✅ Acción cancelada. ¿Qué deseas hacer ahora?', adminKeyboard);
+        return bot.sendMessage(chatId, '✅ Acción cancelada.', (tgId === ADMIN_ID ? adminKeyboard : userKeyboard));
     }
 
-    // --- FLUJOS DE ESTADO (Cuando el bot está esperando una respuesta del admin) ---
+    // --- PROCESOS DE ESTADO (Para no usar comandos escritos) ---
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
-        // FLUJO: AÑADIR SALDO
-        if (state.step === 'ADD_BALANCE_USER') {
-            state.data.targetUser = text.trim();
-            state.step = 'ADD_BALANCE_AMOUNT';
-            return bot.sendMessage(chatId, `Dime la **cantidad** en USD a añadir para ${state.data.targetUser}:`, { parse_mode: 'Markdown' });
+        // ADMIN: Proceso de Saldo
+        if (state.step === 'WAIT_USER_BALANCE') {
+            state.user = text.trim();
+            state.step = 'WAIT_AMOUNT_BALANCE';
+            return bot.sendMessage(chatId, `Perfecto. ¿Cuánto saldo le añado a *${state.user}*? (Ej: 5.00)`, {parse_mode:'Markdown'});
         }
-        if (state.step === 'ADD_BALANCE_AMOUNT') {
+        if (state.step === 'WAIT_AMOUNT_BALANCE') {
             const amount = parseFloat(text);
-            if (isNaN(amount)) return bot.sendMessage(chatId, '❌ Cantidad inválida. Intenta con un número (ej: 5.50).');
+            if (isNaN(amount)) return bot.sendMessage(chatId, '❌ Número inválido.');
             
-            bot.sendMessage(chatId, '⚙️ Buscando usuario...');
             const usersSnap = await get(ref(db, 'users'));
             let foundUid = null; let currentBal = 0;
-
-            usersSnap.forEach(child => {
-                if (child.val().username === state.data.targetUser) { 
-                    foundUid = child.key; 
-                    currentBal = parseFloat(child.val().balance || 0); 
-                }
-            });
+            usersSnap.forEach(u => { if(u.val().username === state.user) { foundUid = u.key; currentBal = parseFloat(u.val().balance || 0); }});
 
             if (foundUid) {
                 const updates = {};
                 updates[`users/${foundUid}/balance`] = currentBal + amount;
                 const rechRef = push(ref(db, `users/${foundUid}/recharges`));
                 updates[`users/${foundUid}/recharges/${rechRef.key}`] = { amount: amount, date: Date.now() };
-                
                 await update(ref(db), updates);
-                bot.sendMessage(chatId, `✅ Saldo añadido a ${state.data.targetUser}. Nuevo saldo: $${(currentBal + amount).toFixed(2)}`, adminKeyboard);
-                
-                // --- NOTIFICAR AL USUARIO DEL SALDO AÑADIDO ---
-                const authData = await get(ref(db, 'telegram_auth'));
-                let targetTgId = null;
-                if (authData.exists()) {
-                    authData.forEach(child => {
-                        if (child.val() === foundUid) targetTgId = child.key;
-                    });
-                }
-                if (targetTgId) {
-                    bot.sendMessage(targetTgId, `💰 *¡NUEVO SALDO DISPONIBLE!*\nEl administrador te ha añadido *$${amount.toFixed(2)} USD* a tu cuenta.\n\nNuevo saldo total: *$${(currentBal + amount).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
-                }
-
+                bot.sendMessage(chatId, `✅ $${amount} añadidos a ${state.user}.`, adminKeyboard);
             } else {
-                bot.sendMessage(chatId, `❌ Usuario no encontrado.`, adminKeyboard);
+                bot.sendMessage(chatId, '❌ Usuario no encontrado.', adminKeyboard);
             }
-            userStates[chatId] = null; // Fin del proceso
-            return;
+            userStates[chatId] = null; return;
         }
 
-        // FLUJO: CREAR PRODUCTO
-        if (state.step === 'CREATE_PROD_NAME') {
-            state.data.name = text;
-            state.step = 'CREATE_PROD_PRICE';
-            return bot.sendMessage(chatId, 'Ingresa el **precio** en USD (ej: 2.5):', { parse_mode: 'Markdown' });
-        }
-        if (state.step === 'CREATE_PROD_PRICE') {
-            const price = parseFloat(text);
-            if (isNaN(price)) return bot.sendMessage(chatId, '❌ Precio inválido. Usa números.');
-            state.data.price = price;
-            state.step = 'CREATE_PROD_DURATION';
-            return bot.sendMessage(chatId, 'Ingresa la **duración** (ej: 24 horas):', { parse_mode: 'Markdown' });
-        }
-        if (state.step === 'CREATE_PROD_DURATION') {
-            const newProdRef = push(ref(db, 'products'));
-            await set(newProdRef, { name: state.data.name, price: state.data.price, duration: text });
-            bot.sendMessage(chatId, `✅ Producto *${state.data.name}* creado exitosamente.`, { parse_mode: 'Markdown', ...adminKeyboard });
-            userStates[chatId] = null;
-            return;
-        }
-
-        // FLUJO: AÑADIR STOCK (KEYS)
-        if (state.step === 'ADD_STOCK_KEYS') {
-            const keysRaw = text;
-            const cleanKeys = keysRaw.split(/[\n,\s]+/).map(k => k.trim()).filter(k => k.length > 0);
-            
-            if (cleanKeys.length === 0) {
-                userStates[chatId] = null;
-                return bot.sendMessage(chatId, '❌ No se detectaron keys válidas. Operación cancelada.');
-            }
-
+        // ADMIN: Proceso de Stock
+        if (state.step === 'WAIT_KEYS') {
+            const cleanKeys = text.split(/[\n,\s]+/).map(k => k.trim()).filter(k => k.length > 0);
             const updates = {};
             cleanKeys.forEach(k => {
-                const newId = push(ref(db, `products/${state.data.prodId}/keys`)).key;
-                updates[`products/${state.data.prodId}/keys/${newId}`] = k;
+                const newId = push(ref(db, `products/${state.prodId}/keys`)).key;
+                updates[`products/${state.prodId}/keys/${newId}`] = k;
             });
-
             await update(ref(db), updates);
-            bot.sendMessage(chatId, `✅ ¡Listo! Se agregaron ${cleanKeys.length} keys al producto.`, adminKeyboard);
-            userStates[chatId] = null;
-            return;
+            bot.sendMessage(chatId, `✅ Se agregaron ${cleanKeys.length} keys.`, adminKeyboard);
+            userStates[chatId] = null; return;
+        }
+        
+        // ADMIN: Crear Producto
+        if (state.step === 'WAIT_PROD_NAME') {
+            state.name = text; state.step = 'WAIT_PROD_PRICE';
+            return bot.sendMessage(chatId, 'Dime el precio (Ej: 1.50):');
+        }
+        if (state.step === 'WAIT_PROD_PRICE') {
+            state.price = parseFloat(text); state.step = 'WAIT_PROD_DUR';
+            return bot.sendMessage(chatId, 'Dime la duración (Ej: 24 Horas):');
+        }
+        if (state.step === 'WAIT_PROD_DUR') {
+            const newRef = push(ref(db, 'products'));
+            await set(newRef, { name: state.name, price: state.price, duration: text });
+            bot.sendMessage(chatId, `✅ Producto ${state.name} creado.`, adminKeyboard);
+            userStates[chatId] = null; return;
         }
     }
 
-    // --- ACCIONES DE LOS BOTONES DE ABAJO (MENÚ PRINCIPAL) ---
-    if (text === '👤 Mi Perfil') {
-        const userSnap = await get(ref(db, `users/${webUid}`));
-        const user = userSnap.val();
-        return bot.sendMessage(chatId, `👤 *PERFIL LUCK XIT*\n\nUsuario: ${user.username}\n💰 Saldo: *$${parseFloat(user.balance).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
-    }
+    // --- BOTONES DEL TECLADO ---
+    switch (text) {
+        case '👤 Mi Perfil':
+            const uSnap = await get(ref(db, `users/${webUid}`));
+            bot.sendMessage(chatId, `👤 *USUARIO:* ${uSnap.val().username}\n💰 *SALDO:* $${uSnap.val().balance.toFixed(2)}`, {parse_mode:'Markdown'});
+            break;
 
-    if (text === '💳 Recargas') {
-        const rechargeInline = { inline_keyboard: [[{ text: '💬 Enviar Comprobante a WhatsApp', url: 'https://wa.me/573142369516' }]] };
-        return bot.sendMessage(chatId, `💳 *RECARGAS*\n\n1. Envía a Nequi: 3214701288\n2. Toca el botón de abajo para reportarlo.`, { parse_mode: 'Markdown', reply_markup: rechargeInline });
-    }
-
-    if (text === '🛒 Tienda') {
-        const productsSnap = await get(ref(db, 'products'));
-        if (!productsSnap.exists()) return bot.sendMessage(chatId, 'Tienda vacía en este momento.');
-        
-        let inlineKeyboard = [];
-        productsSnap.forEach(child => {
-            const p = child.val();
-            const stock = p.keys ? Object.keys(p.keys).length : 0;
-            if (stock > 0) {
-                inlineKeyboard.push([{ text: `Comprar ${p.name} - $${p.price} (${stock} disp)`, callback_data: `buy_${child.key}` }]);
-            }
-        });
-        if(inlineKeyboard.length === 0) return bot.sendMessage(chatId, '❌ Todos los productos están agotados.');
-        
-        return bot.sendMessage(chatId, `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
-    }
-
-    // --- ACCIONES ADMIN (BOTONES DE ABAJO) ---
-    if (tgId === ADMIN_ID) {
-        if (text === '💰 Añadir Saldo') {
-            userStates[chatId] = { step: 'ADD_BALANCE_USER', data: {} };
-            return bot.sendMessage(chatId, 'Escribe el **Nombre de Usuario** exacto al que deseas añadir saldo:', { parse_mode: 'Markdown' });
-        }
-        
-        if (text === '📦 Crear Producto') {
-            userStates[chatId] = { step: 'CREATE_PROD_NAME', data: {} };
-            return bot.sendMessage(chatId, 'Escribe el **Nombre** del nuevo producto:', { parse_mode: 'Markdown' });
-        }
-
-        if (text === '🔑 Añadir Stock') {
-            const productsSnap = await get(ref(db, 'products'));
-            if (!productsSnap.exists()) return bot.sendMessage(chatId, '❌ No hay productos creados.');
-            
-            let inlineKeyboard = [];
-            productsSnap.forEach(child => {
-                inlineKeyboard.push([{ text: `➕ Stock a: ${child.val().name}`, callback_data: `stock_${child.key}` }]);
+        case '💳 Recargas':
+            bot.sendMessage(chatId, `💳 *MÉTODO NEQUI*\n\nNúmero: \`3214701288\`\n\nEnvía el pago y repórtalo aquí:`, {
+                parse_mode: 'Markdown',
+                reply_markup: { inline_keyboard: [[{ text: '💬 Reportar Pago', url: 'https://wa.me/573142369516' }]] }
             });
-            return bot.sendMessage(chatId, `📦 Selecciona a qué producto vas a agregarle Keys:`, { reply_markup: { inline_keyboard: inlineKeyboard } });
-        }
+            break;
+
+        case '🛒 Tienda':
+            const pSnap = await get(ref(db, 'products'));
+            let btns = [];
+            pSnap.forEach(p => {
+                const stock = p.val().keys ? Object.keys(p.val().keys).length : 0;
+                if(stock > 0) btns.push([{ text: `${p.val().name} - $${p.val().price} (${stock} disp)`, callback_data: `buy_${p.key}` }]);
+            });
+            bot.sendMessage(chatId, '🛒 *TIENDA LUCK XIT*', {parse_mode:'Markdown', reply_markup: { inline_keyboard: btns }});
+            break;
+
+        // BOTONES EXCLUSIVOS ADMIN
+        case '💰 Añadir Saldo':
+            if(tgId !== ADMIN_ID) return;
+            userStates[chatId] = { step: 'WAIT_USER_BALANCE' };
+            bot.sendMessage(chatId, '👤 Escribe el nombre del usuario:');
+            break;
+
+        case '🔑 Añadir Stock':
+            if(tgId !== ADMIN_ID) return;
+            const prods = await get(ref(db, 'products'));
+            let sBtns = [];
+            prods.forEach(p => sBtns.push([{ text: `+ Stock a: ${p.val().name}`, callback_data: `stock_${p.key}` }]));
+            bot.sendMessage(chatId, 'Selecciona el producto:', { reply_markup: { inline_keyboard: sBtns } });
+            break;
+
+        case '📦 Crear Producto':
+            if(tgId !== ADMIN_ID) return;
+            userStates[chatId] = { step: 'WAIT_PROD_NAME' };
+            bot.sendMessage(chatId, 'Nombre del nuevo producto:');
+            break;
     }
 });
 
-// 3. MANEJADOR DE BOTONES EN LÍNEA (Compras y Selección de Stock)
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const tgId = query.from.id;
-    const data = query.data;
-    bot.answerCallbackQuery(query.id);
+// --- 6. BOTONES INLINE (Compras y Selección Stock) ---
+bot.on('callback_query', async (q) => {
+    const chatId = q.message.chat.id;
+    const data = q.data;
+    const tgId = q.from.id;
+    bot.answerCallbackQuery(q.id);
 
     const webUid = await getAuthUser(tgId);
-    if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
+    if(!webUid) return;
 
-    // ADMIN: SELECCIÓN DE PRODUCTO PARA AÑADIR STOCK
-    if (data.startsWith('stock_') && tgId === ADMIN_ID) {
-        const prodId = data.split('_')[1];
-        userStates[chatId] = { step: 'ADD_STOCK_KEYS', data: { prodId: prodId } };
-        return bot.sendMessage(chatId, 'Pega todas las **Keys** ahora. Puedes separarlas por espacios, comas o saltos de línea:', { parse_mode: 'Markdown' });
-    }
-
-    // USUARIOS: COMPRA DE PRODUCTOS
     if (data.startsWith('buy_')) {
-        const productId = data.split('_')[1];
-        bot.sendMessage(chatId, '⚙️ Procesando transacción...');
+        const pId = data.split('_')[1];
+        const uSnap = await get(ref(db, `users/${webUid}`));
+        const pSnap = await get(ref(db, `products/${pId}`));
+        const user = uSnap.val(); const prod = pSnap.val();
 
-        const userSnap = await get(ref(db, `users/${webUid}`));
-        const prodSnap = await get(ref(db, `products/${productId}`));
-        
-        let currentBalance = parseFloat(userSnap.val().balance || 0);
-        let product = prodSnap.val();
+        if (user.balance < prod.price) return bot.sendMessage(chatId, '❌ Saldo insuficiente.');
 
-        if (currentBalance < product.price) return bot.sendMessage(chatId, '❌ Saldo insuficiente en la Web.');
-        
-        if (product.keys && Object.keys(product.keys).length > 0) {
-            const firstKeyId = Object.keys(product.keys)[0];
-            const keyToDeliver = product.keys[firstKeyId];
-            
-            // Calculamos cuánto stock va a quedar (total actual menos 1 que estamos vendiendo)
-            const stockRestante = Object.keys(product.keys).length - 1;
-
+        if (prod.keys) {
+            const kId = Object.keys(prod.keys)[0];
+            const key = prod.keys[kId];
             const updates = {};
-            updates[`products/${productId}/keys/${firstKeyId}`] = null; 
-            updates[`users/${webUid}/balance`] = currentBalance - product.price; 
-            
-            const historyRef = push(ref(db, `users/${webUid}/history`));
-            updates[`users/${webUid}/history/${historyRef.key}`] = { product: product.name, key: keyToDeliver, price: product.price, date: Date.now() };
-
+            updates[`products/${pId}/keys/${kId}`] = null;
+            updates[`users/${webUid}/balance`] = user.balance - prod.price;
+            const hRef = push(ref(db, `users/${webUid}/history`));
+            updates[`users/${webUid}/history/${hRef.key}`] = { product: prod.name, key: key, price: prod.price, date: Date.now() };
             await update(ref(db), updates);
-            bot.sendMessage(chatId, `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``, { parse_mode: 'Markdown' });
-
-            // --- AVISAR AL ADMIN SI EL STOCK LLEGÓ A CERO ---
-            if (stockRestante === 0) {
-                bot.sendMessage(ADMIN_ID, `⚠️ *¡ALERTA DE INVENTARIO!*\n\nEl producto *${product.name}* se acaba de quedar en **0 Keys**.\n\nPor favor entra al menú y usa "🔑 Añadir Stock".`, { parse_mode: 'Markdown' });
-            }
-
-        } else {
-            bot.sendMessage(chatId, '❌ Producto agotado justo ahora.');
+            bot.sendMessage(chatId, `✅ *COMPRA EXITOSA*\n\n🔑 Key: \`${key}\``, {parse_mode:'Markdown'});
         }
     }
-});
 
-console.log('🤖 Bot sincronizado e interactivo iniciado...');
+    if (data.startsWith('stock_') && tgId === ADMIN_ID) {
+        userStates[chatId] = { step: 'WAIT_KEYS', prodId: data.split('_')[1] };
+        bot.sendMessage(chatId, 'Pega las keys (pueden ser varias separadas por comas o enter):');
+    }
+});
