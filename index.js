@@ -26,7 +26,7 @@ const userKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }, { text: '📂 Ver archivos' }]
+            [{ text: '💳 Recargas' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -37,10 +37,9 @@ const adminKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }, { text: '📂 Ver archivos' }],
+            [{ text: '💳 Recargas' }],
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
-            [{ text: '💰 Añadir Saldo' }, { text: '📝 Subir/Editar Archivo' }],
-            [{ text: '❌ Cancelar Acción' }]
+            [{ text: '💰 Añadir Saldo' }, { text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -75,15 +74,13 @@ bot.onText(/\/start/, async (msg) => {
     bot.sendMessage(chatId, `${greeting}\nUsa los botones de abajo para navegar.`, { parse_mode: 'Markdown', ...keyboard });
 });
 
-// 2. MANEJADOR DE MENSAJES (Botones de abajo y respuestas a estados)
+// 2. MANEJADOR DE MENSAJES DE TEXTO (Botones de abajo y respuestas a estados)
 bot.on('message', async (msg) => {
-    // Ignoramos el comando /start porque ya tiene su propio manejador arriba
-    if (msg.text === '/start') return;
+    if (!msg.text || msg.text === '/start') return;
 
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
-    // Si no es texto (por ejemplo si envías una foto o archivo), text será un string vacío para no dar error
-    const text = msg.text || ''; 
+    const text = msg.text;
 
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso denegado. Escribe /start para verificar.`);
@@ -97,21 +94,6 @@ bot.on('message', async (msg) => {
     // --- FLUJOS DE ESTADO (Cuando el bot está esperando una respuesta del admin) ---
     if (userStates[chatId]) {
         const state = userStates[chatId];
-
-        // FLUJO: SUBIR/EDITAR ARCHIVO (Acepta CUALQUIER mensaje: fotos, archivos, texto)
-        if (state.step === 'UPLOAD_FILE_MSG') {
-            // Guardamos la referencia exacta del mensaje (sea foto, documento o texto)
-            await set(ref(db, 'global_settings/file_message'), {
-                messageId: msg.message_id,
-                fromChatId: chatId
-            });
-            bot.sendMessage(chatId, `✅ Archivo guardado correctamente. Los usuarios ya recibirán este mensaje exacto tocando en "📂 Ver archivos".`, adminKeyboard);
-            userStates[chatId] = null;
-            return;
-        }
-
-        // Si estamos en otros pasos que requieren texto estricto y el usuario mandó una imagen sin querer, lo ignoramos
-        if (!text) return;
 
         // FLUJO: AÑADIR SALDO
         if (state.step === 'ADD_BALANCE_USER') {
@@ -143,7 +125,7 @@ bot.on('message', async (msg) => {
                 await update(ref(db), updates);
                 bot.sendMessage(chatId, `✅ Saldo añadido a ${state.data.targetUser}. Nuevo saldo: $${(currentBal + amount).toFixed(2)}`, adminKeyboard);
                 
-                // NOTIFICAR AL USUARIO DEL SALDO AÑADIDO
+                // --- NOTIFICAR AL USUARIO DEL SALDO AÑADIDO ---
                 const authData = await get(ref(db, 'telegram_auth'));
                 let targetTgId = null;
                 if (authData.exists()) {
@@ -206,9 +188,6 @@ bot.on('message', async (msg) => {
         }
     }
 
-    // A partir de aquí, las opciones del menú exigen texto. Si subieron un archivo de la nada, lo ignoramos.
-    if (!text) return;
-
     // --- ACCIONES DE LOS BOTONES DE ABAJO (MENÚ PRINCIPAL) ---
     if (text === '👤 Mi Perfil') {
         const userSnap = await get(ref(db, `users/${webUid}`));
@@ -219,25 +198,6 @@ bot.on('message', async (msg) => {
     if (text === '💳 Recargas') {
         const rechargeInline = { inline_keyboard: [[{ text: '💬 Enviar Comprobante a WhatsApp', url: 'https://wa.me/573142369516' }]] };
         return bot.sendMessage(chatId, `💳 *RECARGAS*\n\n1. Envía a Nequi: 3214701288\n2. Toca el botón de abajo para reportarlo.`, { parse_mode: 'Markdown', reply_markup: rechargeInline });
-    }
-
-    // --- NUEVA ACCIÓN CORREGIDA: VER ARCHIVOS (Copia exacta del mensaje) ---
-    if (text === '📂 Ver archivos') {
-        const fileSnap = await get(ref(db, 'global_settings/file_message'));
-        if (fileSnap.exists() && fileSnap.val()) {
-            const fileData = fileSnap.val();
-            
-            // Si es un objeto (formato nuevo que guarda archivos/fotos/textos)
-            if (fileData.messageId && fileData.fromChatId) {
-                return bot.copyMessage(chatId, fileData.fromChatId, fileData.messageId)
-                    .catch(err => bot.sendMessage(chatId, `❌ Error al mostrar el archivo.`));
-            } else {
-                // Compatibilidad por si tenías guardado puro texto del código anterior
-                return bot.sendMessage(chatId, `📂 *ARCHIVOS:*\n\n${fileData}`, { parse_mode: 'Markdown' });
-            }
-        } else {
-            return bot.sendMessage(chatId, `📂 Aún no hay archivos o mensajes disponibles.`);
-        }
     }
 
     if (text === '🛒 Tienda') {
@@ -279,11 +239,6 @@ bot.on('message', async (msg) => {
             });
             return bot.sendMessage(chatId, `📦 Selecciona a qué producto vas a agregarle Keys:`, { reply_markup: { inline_keyboard: inlineKeyboard } });
         }
-
-        if (text === '📝 Subir/Editar Archivo') {
-            userStates[chatId] = { step: 'UPLOAD_FILE_MSG', data: {} };
-            return bot.sendMessage(chatId, '📝 *Sube un Documento, una Foto, un Video o simplemente escribe un Mensaje*.\n\nLo que envíes ahora será exactamente lo que verán los usuarios al tocar en "Ver archivos".', { parse_mode: 'Markdown' });
-        }
     }
 });
 
@@ -321,6 +276,7 @@ bot.on('callback_query', async (query) => {
             const firstKeyId = Object.keys(product.keys)[0];
             const keyToDeliver = product.keys[firstKeyId];
             
+            // Calculamos cuánto stock va a quedar (total actual menos 1 que estamos vendiendo)
             const stockRestante = Object.keys(product.keys).length - 1;
 
             const updates = {};
@@ -333,7 +289,7 @@ bot.on('callback_query', async (query) => {
             await update(ref(db), updates);
             bot.sendMessage(chatId, `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``, { parse_mode: 'Markdown' });
 
-            // AVISAR AL ADMIN SI EL STOCK LLEGÓ A CERO
+            // --- AVISAR AL ADMIN SI EL STOCK LLEGÓ A CERO ---
             if (stockRestante === 0) {
                 bot.sendMessage(ADMIN_ID, `⚠️ *¡ALERTA DE INVENTARIO!*\n\nEl producto *${product.name}* se acaba de quedar en **0 Keys**.\n\nPor favor entra al menú y usa "🔑 Añadir Stock".`, { parse_mode: 'Markdown' });
             }
