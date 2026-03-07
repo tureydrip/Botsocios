@@ -80,7 +80,7 @@ bot.on('message', async (msg) => {
 
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
-    const text = msg.text || msg.caption || ''; // Tomar texto o leyenda de la foto
+    const text = msg.text || msg.caption || ''; 
 
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso denegado. Escribe /start para verificar.`);
@@ -114,6 +114,41 @@ bot.on('message', async (msg) => {
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
+        // FLUJO: USUARIO ESCRIBE CUÁNTO QUIERE RECARGAR
+        if (state.step === 'WAITING_FOR_RECHARGE_AMOUNT') {
+            // Intentar convertir el texto a número reemplazando comas por puntos por si acaso
+            const amountUsd = parseFloat(text.replace(',', '.').replace('$', ''));
+            const minUsd = state.data.minUsd;
+
+            if (isNaN(amountUsd)) {
+                return bot.sendMessage(chatId, '❌ Cantidad inválida. Por favor, escribe **solo el número** (ej: 3 o 5.5).', { parse_mode: 'Markdown' });
+            }
+
+            if (amountUsd < minUsd) {
+                return bot.sendMessage(chatId, `❌ El monto mínimo para ti es de *$${minUsd} USD*. Intenta con una cantidad mayor.`, { parse_mode: 'Markdown' });
+            }
+
+            const exchangeRate = 3800;
+            const amountCop = amountUsd * exchangeRate;
+
+            const mensajePago = `✅ *MONTO CALCULADO CON ÉXITO*\n\n` +
+                                `💰 Vas a recargar: *$${amountUsd.toFixed(2)} USD*\n` +
+                                `💵 Total a pagar: *$${amountCop.toLocaleString('es-CO')} COP*\n\n` +
+                                `🏦 *PASOS PARA PAGAR Y RECARGAR:*\n` +
+                                `1. Envía exactamente *$${amountCop.toLocaleString('es-CO')} COP* a Nequi: \`3214701288\`\n` +
+                                `2. Selecciona por dónde quieres enviar tu comprobante abajo:`;
+
+            const rechargeInline = { 
+                inline_keyboard: [
+                    [{ text: '💬 Enviar por WhatsApp', url: 'https://wa.me/573142369516' }],
+                    [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: 'send_receipt' }]
+                ] 
+            };
+
+            userStates[chatId] = null; // Terminamos esta etapa
+            return bot.sendMessage(chatId, mensajePago, { parse_mode: 'Markdown', reply_markup: rechargeInline });
+        }
+
         // FLUJO: MENSAJE GLOBAL (ADMIN)
         if (state.step === 'WAITING_FOR_BROADCAST_MESSAGE') {
             bot.sendMessage(chatId, '⏳ Enviando mensaje a todos los usuarios...');
@@ -123,7 +158,6 @@ bot.on('message', async (msg) => {
             if (telegramAuthSnap.exists()) {
                 telegramAuthSnap.forEach(child => {
                     const targetTgId = child.key;
-                    // Enviar a todos usando try-catch invisible (por si el usuario bloqueó al bot)
                     bot.sendMessage(targetTgId, `📢 *Anuncio Oficial LUCK XIT*\n\n${text}`, { parse_mode: 'Markdown' }).catch(() => {});
                     count++;
                 });
@@ -134,7 +168,7 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: AÑADIR SALDO
+        // FLUJO: AÑADIR SALDO (ADMIN)
         if (state.step === 'ADD_BALANCE_USER') {
             state.data.targetUser = text.trim();
             state.step = 'ADD_BALANCE_AMOUNT';
@@ -186,7 +220,7 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: CREAR PRODUCTO
+        // FLUJO: CREAR PRODUCTO (ADMIN)
         if (state.step === 'CREATE_PROD_NAME') {
             state.data.name = text;
             state.step = 'CREATE_PROD_PRICE';
@@ -207,7 +241,7 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: AÑADIR STOCK (KEYS)
+        // FLUJO: AÑADIR STOCK (KEYS) (ADMIN)
         if (state.step === 'ADD_STOCK_KEYS') {
             const keysRaw = text;
             const cleanKeys = keysRaw.split(/[\n,\s]+/).map(k => k.trim()).filter(k => k.length > 0);
@@ -241,7 +275,7 @@ bot.on('message', async (msg) => {
         const userSnap = await get(ref(db, `users/${webUid}`));
         const userData = userSnap.val();
 
-        // 1. Calcular historial total de recargas del usuario
+        // Calcular historial de recargas
         let totalRecharged = 0;
         if (userData.recharges) {
             Object.values(userData.recharges).forEach(r => {
@@ -249,31 +283,20 @@ bot.on('message', async (msg) => {
             });
         }
 
-        // 2. Determinar el mínimo basado en su historial
         const minUsd = totalRecharged > 5 ? 2 : 3;
         const exchangeRate = 3800;
-        const minCop = minUsd * exchangeRate;
 
-        // 3. Crear el mensaje dinámico
-        const mensajeRecarga = `💳 *SISTEMA DE RECARGAS*\n\n` +
+        // Poner al usuario en estado de espera para que escriba la cantidad
+        userStates[chatId] = { step: 'WAITING_FOR_RECHARGE_AMOUNT', data: { minUsd: minUsd } };
+
+        const mensajeRequisitos = `💳 *NUEVA RECARGA*\n\n` +
                                `💵 *Tasa de Cambio:* $1 USD = $${exchangeRate.toLocaleString('es-CO')} COP\n` +
                                `📈 *Total recargado por ti:* $${totalRecharged.toFixed(2)} USD\n\n` +
-                               `⚠️ *REGLAS DE RECARGA:*\n` +
-                               `• Mínimo normal: $3 USD ($11,400 COP)\n` +
-                               `• Mínimo VIP (Más de $5 USD recargados): $2 USD ($7,600 COP)\n\n` +
-                               `✅ *TU MÍNIMO ACTUAL ES:* *$${minUsd} USD ($${minCop.toLocaleString('es-CO')} COP)*\n\n` +
-                               `🏦 *PASOS PARA RECARGAR:*\n` +
-                               `1. Envía el dinero a Nequi: \`3214701288\`\n` +
-                               `2. Selecciona por dónde quieres enviar tu comprobante abajo:`;
+                               `✅ *Tu recarga mínima es de:* *$${minUsd} USD*\n\n` +
+                               `👇 *Escribe la cantidad en USD* que deseas recargar:\n` +
+                               `_(Escribe solo el número, por ejemplo: ${minUsd} o 5.5)_`;
 
-        const rechargeInline = { 
-            inline_keyboard: [
-                [{ text: '💬 Enviar por WhatsApp', url: 'https://wa.me/573142369516' }],
-                [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: 'send_receipt' }]
-            ] 
-        };
-
-        return bot.sendMessage(chatId, mensajeRecarga, { parse_mode: 'Markdown', reply_markup: rechargeInline });
+        return bot.sendMessage(chatId, mensajeRequisitos, { parse_mode: 'Markdown' });
     }
 
     if (text === '🛒 Tienda') {
