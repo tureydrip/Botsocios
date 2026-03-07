@@ -95,19 +95,31 @@ bot.on('message', async (msg) => {
 
     // --- MANEJO DE ENVÍO DE COMPROBANTES (FOTOS) ---
     if (msg.photo && userStates[chatId] && userStates[chatId].step === 'WAITING_FOR_RECEIPT') {
-        const username = userStates[chatId].data.username;
-        const fileId = msg.photo[msg.photo.length - 1].file_id; // Foto con mejor resolución
+        const stateData = userStates[chatId].data; // --- NUEVO: Extraemos todos los datos guardados ---
+        const username = stateData.username;
+        const amount = stateData.amount;
+        const targetWebUid = stateData.webUid;
+        const fileId = msg.photo[msg.photo.length - 1].file_id; 
         
+        // --- NUEVO: Teclado para el Admin ---
+        // Usamos IDs cortos (ok_rech y no_rech) para no exceder el límite de caracteres de Telegram
+        const adminConfirmKeyboard = {
+            inline_keyboard: [
+                [{ text: '✅ Confirmar', callback_data: `ok_rech_${targetWebUid}_${amount}_${tgId}` }],
+                [{ text: '❌ Rechazar', callback_data: `no_rech_${tgId}` }]
+            ]
+        };
+
         bot.sendPhoto(ADMIN_ID, fileId, {
-            caption: `💳 *NUEVO COMPROBANTE DE PAGO*\n\n👤 Usuario: ${username}\n🆔 ID Telegram: \`${tgId}\``,
-            parse_mode: 'Markdown'
+            caption: `💳 *NUEVO COMPROBANTE DE PAGO*\n\n👤 Usuario: ${username}\n🆔 ID Telegram: \`${tgId}\`\n💰 Monto Solicitado: *$${amount} USD*`,
+            parse_mode: 'Markdown',
+            reply_markup: adminConfirmKeyboard // --- NUEVO: Adjuntamos los botones ---
         });
         
-        userStates[chatId] = null; // Limpiar estado
-        return bot.sendMessage(chatId, '✅ Comprobante enviado exitosamente al administrador. Por favor espera a que se acredite tu saldo.', keyboard);
+        userStates[chatId] = null; 
+        return bot.sendMessage(chatId, '✅ Comprobante enviado exitosamente al administrador. Por favor espera a que se valide y acredite tu saldo.', keyboard);
     }
 
-    // Si enviaron una foto pero no estaban en proceso de comprobante, se ignora
     if (!msg.text) return; 
 
     // --- FLUJOS DE ESTADO ---
@@ -116,7 +128,6 @@ bot.on('message', async (msg) => {
 
         // FLUJO: USUARIO ESCRIBE CUÁNTO QUIERE RECARGAR
         if (state.step === 'WAITING_FOR_RECHARGE_AMOUNT') {
-            // Intentar convertir el texto a número reemplazando comas por puntos por si acaso
             const amountUsd = parseFloat(text.replace(',', '.').replace('$', ''));
             const minUsd = state.data.minUsd;
 
@@ -138,14 +149,15 @@ bot.on('message', async (msg) => {
                                 `1. Envía exactamente *$${amountCop.toLocaleString('es-CO')} COP* a Nequi: \`3214701288\`\n` +
                                 `2. Selecciona por dónde quieres enviar tu comprobante abajo:`;
 
+            // --- NUEVO: Pasamos la cantidad en el callback_data ---
             const rechargeInline = { 
                 inline_keyboard: [
                     [{ text: '💬 Enviar por WhatsApp', url: 'https://wa.me/573142369516' }],
-                    [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: 'send_receipt' }]
+                    [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: `send_receipt_${amountUsd}` }]
                 ] 
             };
 
-            userStates[chatId] = null; // Terminamos esta etapa
+            userStates[chatId] = null; 
             return bot.sendMessage(chatId, mensajePago, { parse_mode: 'Markdown', reply_markup: rechargeInline });
         }
 
@@ -168,7 +180,7 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: AÑADIR SALDO (ADMIN)
+        // FLUJO: AÑADIR SALDO MANUAL (ADMIN)
         if (state.step === 'ADD_BALANCE_USER') {
             state.data.targetUser = text.trim();
             state.step = 'ADD_BALANCE_AMOUNT';
@@ -210,7 +222,7 @@ bot.on('message', async (msg) => {
                 }
 
                 if (targetTgId) {
-                    bot.sendMessage(targetTgId, `tu papá luck xit te puso : ${amount} de saldo nuevo saldo:${nuevoSaldo.toFixed(2)}`);
+                    bot.sendMessage(targetTgId, `🎉 tu papá luck xit te puso : $${amount} USD de saldo. Nuevo saldo: $${nuevoSaldo.toFixed(2)} USD`);
                 }
 
             } else {
@@ -275,7 +287,6 @@ bot.on('message', async (msg) => {
         const userSnap = await get(ref(db, `users/${webUid}`));
         const userData = userSnap.val();
 
-        // Calcular historial de recargas
         let totalRecharged = 0;
         if (userData.recharges) {
             Object.values(userData.recharges).forEach(r => {
@@ -286,7 +297,6 @@ bot.on('message', async (msg) => {
         const minUsd = totalRecharged > 5 ? 2 : 3;
         const exchangeRate = 3800;
 
-        // Poner al usuario en estado de espera para que escriba la cantidad
         userStates[chatId] = { step: 'WAITING_FOR_RECHARGE_AMOUNT', data: { minUsd: minUsd } };
 
         const mensajeRequisitos = `💳 *NUEVA RECARGA*\n\n` +
@@ -356,13 +366,57 @@ bot.on('callback_query', async (query) => {
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
 
-    // USUARIOS: SOLICITAR ENVÍO DE COMPROBANTE
-    if (data === 'send_receipt') {
+    // --- NUEVO: USUARIOS SOLICITAN ENVÍO DE COMPROBANTE (Captura la cantidad) ---
+    if (data.startsWith('send_receipt_')) {
+        const amountRequest = parseFloat(data.split('_')[2]);
         const userSnap = await get(ref(db, `users/${webUid}`));
         const username = userSnap.val().username;
         
-        userStates[chatId] = { step: 'WAITING_FOR_RECEIPT', data: { username: username } };
+        userStates[chatId] = { step: 'WAITING_FOR_RECEIPT', data: { username: username, amount: amountRequest, webUid: webUid } };
         return bot.sendMessage(chatId, '📸 Por favor, envía la **foto de tu comprobante** de pago ahora mismo.\n\n_(Asegúrate de que la captura se vea clara)_', { parse_mode: 'Markdown' });
+    }
+
+    // --- NUEVO: ADMIN CONFIRMA EL PAGO DESDE LA FOTO ---
+    if (data.startsWith('ok_rech_') && tgId === ADMIN_ID) {
+        const parts = data.split('_');
+        const targetWebUid = parts[2];
+        const amount = parseFloat(parts[3]);
+        const targetTgId = parts[4];
+
+        // Borramos los botones del comprobante para que no lo apruebes dos veces por error
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+        bot.sendMessage(chatId, '⚙️ Acreditando saldo al usuario...');
+
+        const userSnap = await get(ref(db, `users/${targetWebUid}`));
+        if (userSnap.exists()) {
+            const currentBal = parseFloat(userSnap.val().balance || 0);
+            const nuevoSaldo = currentBal + amount;
+
+            const updates = {};
+            updates[`users/${targetWebUid}/balance`] = nuevoSaldo;
+            const rechRef = push(ref(db, `users/${targetWebUid}/recharges`));
+            updates[`users/${targetWebUid}/recharges/${rechRef.key}`] = { amount: amount, date: Date.now() };
+
+            await update(ref(db), updates);
+
+            // Confirmación al Admin
+            bot.sendMessage(chatId, `✅ Pago aprobado. Se añadieron $${amount} USD a ${userSnap.val().username}.`);
+            // Notificación automática al Usuario
+            bot.sendMessage(targetTgId, `🎉 *¡RECARGA APROBADA!*\n\nTu pago ha sido confirmado. Se han añadido *$${amount} USD* a tu cuenta.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
+        } else {
+            bot.sendMessage(chatId, '❌ Hubo un error buscando al usuario en Firebase.');
+        }
+        return;
+    }
+
+    // --- NUEVO: ADMIN RECHAZA EL PAGO DESDE LA FOTO ---
+    if (data.startsWith('no_rech_') && tgId === ADMIN_ID) {
+        const targetTgId = data.split('_')[2];
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+        
+        bot.sendMessage(chatId, '❌ Comprobante rechazado.');
+        bot.sendMessage(targetTgId, '❌ *RECARGA RECHAZADA*\n\nTu comprobante no fue válido. Si crees que es un error, por favor contacta al soporte enviando un mensaje directo.', { parse_mode: 'Markdown' });
+        return;
     }
 
     // ADMIN: SELECCIÓN DE PRODUCTO PARA AÑADIR STOCK
