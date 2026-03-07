@@ -21,12 +21,12 @@ const db = getDatabase(app);
 // SISTEMA DE ESTADOS 
 const userStates = {}; 
 
-// TECLADOS PRINCIPALES
+// --- NUEVO: Se agregó el botón de solicitar reembolso al teclado del usuario ---
 const userKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }]
+            [{ text: '💳 Recargas' }, { text: '🔄 Solicitar Reembolso' }] 
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -38,7 +38,6 @@ const adminKeyboard = {
         keyboard: [
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
             [{ text: '💰 Añadir Saldo' }, { text: '📢 Mensaje Global' }],
-            // --- NUEVO: Botón de reembolsos ---
             [{ text: '🔄 Revisar Reembolsos' }, { text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
@@ -125,10 +124,70 @@ bot.on('message', async (msg) => {
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
-        // --- NUEVO: FLUJO PARA BUSCAR LA KEY PARA REEMBOLSO ---
+        // --- NUEVO: FLUJO PARA EL USUARIO SOLICITANDO REEMBOLSO ---
+        if (state.step === 'WAITING_FOR_USER_REFUND_KEY') {
+            const searchKey = text.trim();
+            bot.sendMessage(chatId, '🔎 Verificando tu solicitud de reembolso...');
+
+            const userUid = state.data.webUid;
+            const userSnap = await get(ref(db, `users/${userUid}`));
+            
+            let found = false;
+            let foundData = null;
+
+            if (userSnap.exists()) {
+                const userData = userSnap.val();
+                if (userData.history) {
+                    // Solo busca en el historial de este usuario específico
+                    Object.keys(userData.history).forEach(histId => {
+                        const compra = userData.history[histId];
+                        if (compra.key === searchKey) {
+                            found = true;
+                            foundData = { uid: userUid, username: userData.username, histId: histId, compra: compra, targetTgId: tgId };
+                        }
+                    });
+                }
+            }
+
+            if (found) {
+                if (foundData.compra.refunded) {
+                    bot.sendMessage(chatId, '⚠️ *Esta Key ya fue reembolsada anteriormente.*', { parse_mode: 'Markdown' });
+                } else {
+                    const dateStr = new Date(foundData.compra.date).toLocaleString('es-CO');
+                    
+                    // Alerta que recibe el ADMIN
+                    const msgInfo = `🔔 *NUEVA SOLICITUD DE REEMBOLSO (USUARIO)*\n\n` +
+                                `👤 *Usuario:* ${foundData.username}\n` +
+                                `📦 *Producto:* ${foundData.compra.product}\n` +
+                                `🔑 *Key:* \`${foundData.compra.key}\`\n` +
+                                `💰 *Costo pagado:* $${parseFloat(foundData.compra.price).toFixed(2)} USD\n` +
+                                `📅 *Fecha:* ${dateStr}\n\n` +
+                                `¿Deseas aprobar la solicitud y devolver el dinero?`;
+
+                    const refundKeyboard = {
+                        inline_keyboard: [
+                            [{ text: '✅ Mandar Reembolso', callback_data: `rfnd_${foundData.uid}_${foundData.histId}` }],
+                            [{ text: '❌ Rechazar Solicitud', callback_data: `reject_refund_${foundData.targetTgId}` }]
+                        ]
+                    };
+                    
+                    // Se lo envía al ADMIN
+                    bot.sendMessage(ADMIN_ID, msgInfo, { parse_mode: 'Markdown', reply_markup: refundKeyboard });
+                    
+                    // Notifica al usuario
+                    bot.sendMessage(chatId, '✅ Tu solicitud de reembolso ha sido enviada al administrador exitosamente. Recibirás una notificación cuando sea revisada.', keyboard);
+                }
+            } else {
+                bot.sendMessage(chatId, '❌ No se encontró esta Key en tu historial de compras. Verifica que la hayas escrito correctamente e intenta de nuevo.', keyboard);
+            }
+            userStates[chatId] = null;
+            return;
+        }
+
+        // FLUJO: BUSCAR LA KEY MANUALMENTE (ADMIN)
         if (state.step === 'WAITING_FOR_REFUND_KEY') {
             const searchKey = text.trim();
-            bot.sendMessage(chatId, '🔎 Buscando la Key en los registros...');
+            bot.sendMessage(chatId, '🔎 Buscando la Key en los registros globales...');
 
             const usersSnap = await get(ref(db, 'users'));
             let found = false;
@@ -139,7 +198,6 @@ bot.on('message', async (msg) => {
                     const uid = userChild.key;
                     const userData = userChild.val();
                     
-                    // Buscamos en el historial del usuario
                     if (userData.history) {
                         Object.keys(userData.history).forEach(histId => {
                             const compra = userData.history[histId];
@@ -165,7 +223,6 @@ bot.on('message', async (msg) => {
                                 `📅 *Fecha:* ${dateStr}\n\n` +
                                 `¿Deseas devolverle el dinero a este usuario?`;
 
-                    // ID corto para evitar límite de carácteres de Telegram
                     const refundKeyboard = {
                         inline_keyboard: [
                             [{ text: '✅ Mandar Reembolso', callback_data: `rfnd_${foundData.uid}_${foundData.histId}` }],
@@ -331,6 +388,13 @@ bot.on('message', async (msg) => {
     }
 
     // --- ACCIONES DE LOS BOTONES DE ABAJO (MENÚ PRINCIPAL) ---
+
+    // --- NUEVO: USUARIO PIDE REEMBOLSO ---
+    if (text === '🔄 Solicitar Reembolso') {
+        userStates[chatId] = { step: 'WAITING_FOR_USER_REFUND_KEY', data: { webUid: webUid } };
+        return bot.sendMessage(chatId, '🔄 *SOLICITUD DE REEMBOLSO*\n\nPor favor, escribe y envía la **Key** exacta de la compra que deseas que te reembolsemos:', { parse_mode: 'Markdown' });
+    }
+
     if (text === '👤 Mi Perfil') {
         const userSnap = await get(ref(db, `users/${webUid}`));
         const user = userSnap.val();
@@ -383,10 +447,9 @@ bot.on('message', async (msg) => {
     // --- ACCIONES ADMIN (BOTONES DE ABAJO) ---
     if (tgId === ADMIN_ID) {
         
-        // --- NUEVO: Iniciar flujo de reembolso ---
         if (text === '🔄 Revisar Reembolsos') {
             userStates[chatId] = { step: 'WAITING_FOR_REFUND_KEY', data: {} };
-            return bot.sendMessage(chatId, '🔎 *SISTEMA DE REEMBOLSOS*\n\nPor favor, pega y envía la **Key** exacta que deseas buscar y reembolsar:', { parse_mode: 'Markdown' });
+            return bot.sendMessage(chatId, '🔎 *SISTEMA DE REEMBOLSOS (Global)*\n\nPor favor, pega y envía la **Key** exacta que deseas buscar y reembolsar:', { parse_mode: 'Markdown' });
         }
 
         if (text === '📢 Mensaje Global') {
@@ -427,13 +490,12 @@ bot.on('callback_query', async (query) => {
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
 
-    // --- NUEVO: EJECUTAR REEMBOLSO (Admin) ---
+    // --- EJECUTAR REEMBOLSO (Admin aprueba solicitud del usuario o la suya propia) ---
     if (data.startsWith('rfnd_') && tgId === ADMIN_ID) {
         const parts = data.split('_');
         const targetUid = parts[1];
         const histId = parts[2];
 
-        // Borrar botonera de reembolso
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
 
         const userSnap = await get(ref(db, `users/${targetUid}`));
@@ -448,13 +510,12 @@ bot.on('callback_query', async (query) => {
 
                 const updates = {};
                 updates[`users/${targetUid}/balance`] = nuevoSaldo;
-                updates[`users/${targetUid}/history/${histId}/refunded`] = true; // Evitar dobles reembolsos
+                updates[`users/${targetUid}/history/${histId}/refunded`] = true; 
 
                 await update(ref(db), updates);
 
                 bot.sendMessage(chatId, `✅ *Reembolso completado.* Se devolvieron $${price} USD a la cuenta de ${userData.username}.`, { parse_mode: 'Markdown' });
 
-                // Avisar al usuario del reembolso
                 const telegramAuthSnap = await get(ref(db, 'telegram_auth'));
                 let targetTgId = null;
                 if (telegramAuthSnap.exists()) {
@@ -476,7 +537,17 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // --- NUEVO: CANCELAR REEMBOLSO (Admin) ---
+    // --- NUEVO: RECHAZAR SOLICITUD DE REEMBOLSO DEL USUARIO (Admin) ---
+    if (data.startsWith('reject_refund_') && tgId === ADMIN_ID) {
+        const targetTgId = data.split('_')[2];
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+        
+        bot.sendMessage(chatId, '❌ Solicitud de reembolso rechazada.');
+        bot.sendMessage(targetTgId, '❌ *SOLICITUD RECHAZADA*\n\nTu solicitud de reembolso para esa Key no fue aprobada por el administrador. Contacta a soporte si crees que es un error.', { parse_mode: 'Markdown' });
+        return;
+    }
+
+    // CANCELAR REEMBOLSO LOCAL (Cuando el Admin cancela su propia búsqueda)
     if (data === 'cancel_refund' && tgId === ADMIN_ID) {
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
         return bot.sendMessage(chatId, '❌ Reembolso cancelado exitosamente.');
@@ -558,7 +629,7 @@ bot.on('callback_query', async (query) => {
             updates[`users/${webUid}/balance`] = currentBalance - product.price; 
             
             const historyRef = push(ref(db, `users/${webUid}/history`));
-            updates[`users/${webUid}/history/${historyRef.key}`] = { product: product.name, key: keyToDeliver, price: product.price, date: Date.now(), refunded: false }; // --- AÑADIDO: refunded: false por defecto ---
+            updates[`users/${webUid}/history/${historyRef.key}`] = { product: product.name, key: keyToDeliver, price: product.price, date: Date.now(), refunded: false }; 
 
             await update(ref(db), updates);
             bot.sendMessage(chatId, `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``, { parse_mode: 'Markdown' });
