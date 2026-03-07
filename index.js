@@ -238,13 +238,42 @@ bot.on('message', async (msg) => {
     }
 
     if (text === '💳 Recargas') {
+        const userSnap = await get(ref(db, `users/${webUid}`));
+        const userData = userSnap.val();
+
+        // 1. Calcular historial total de recargas del usuario
+        let totalRecharged = 0;
+        if (userData.recharges) {
+            Object.values(userData.recharges).forEach(r => {
+                totalRecharged += parseFloat(r.amount || 0);
+            });
+        }
+
+        // 2. Determinar el mínimo basado en su historial
+        const minUsd = totalRecharged > 5 ? 2 : 3;
+        const exchangeRate = 3800;
+        const minCop = minUsd * exchangeRate;
+
+        // 3. Crear el mensaje dinámico
+        const mensajeRecarga = `💳 *SISTEMA DE RECARGAS*\n\n` +
+                               `💵 *Tasa de Cambio:* $1 USD = $${exchangeRate.toLocaleString('es-CO')} COP\n` +
+                               `📈 *Total recargado por ti:* $${totalRecharged.toFixed(2)} USD\n\n` +
+                               `⚠️ *REGLAS DE RECARGA:*\n` +
+                               `• Mínimo normal: $3 USD ($11,400 COP)\n` +
+                               `• Mínimo VIP (Más de $5 USD recargados): $2 USD ($7,600 COP)\n\n` +
+                               `✅ *TU MÍNIMO ACTUAL ES:* *$${minUsd} USD ($${minCop.toLocaleString('es-CO')} COP)*\n\n` +
+                               `🏦 *PASOS PARA RECARGAR:*\n` +
+                               `1. Envía el dinero a Nequi: \`3214701288\`\n` +
+                               `2. Selecciona por dónde quieres enviar tu comprobante abajo:`;
+
         const rechargeInline = { 
             inline_keyboard: [
                 [{ text: '💬 Enviar por WhatsApp', url: 'https://wa.me/573142369516' }],
                 [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: 'send_receipt' }]
             ] 
         };
-        return bot.sendMessage(chatId, `💳 *RECARGAS*\n\n1. Envía a Nequi: 3214701288\n2. Selecciona por dónde quieres enviar tu comprobante:`, { parse_mode: 'Markdown', reply_markup: rechargeInline });
+
+        return bot.sendMessage(chatId, mensajeRecarga, { parse_mode: 'Markdown', reply_markup: rechargeInline });
     }
 
     if (text === '🛒 Tienda') {
