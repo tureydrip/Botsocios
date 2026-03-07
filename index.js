@@ -20,16 +20,13 @@ const db = getDatabase(app);
 
 // SISTEMA DE ESTADOS (Para evitar usar comandos)
 const userStates = {}; 
-/* Ejemplo de estructura de estado:
-userStates[chatId] = { step: 'WAITING_FOR_USERNAME', data: { amount: 10 } }
-*/
 
 // TECLADOS PRINCIPALES (Botones de abajo)
 const userKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }]
+            [{ text: '💳 Recargas' }, { text: '📂 Ver archivos' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -40,9 +37,10 @@ const adminKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }],
+            [{ text: '💳 Recargas' }, { text: '📂 Ver archivos' }],
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
-            [{ text: '💰 Añadir Saldo' }, { text: '❌ Cancelar Acción' }]
+            [{ text: '💰 Añadir Saldo' }, { text: '📝 Subir/Editar Archivo' }],
+            [{ text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -127,6 +125,19 @@ bot.on('message', async (msg) => {
                 
                 await update(ref(db), updates);
                 bot.sendMessage(chatId, `✅ Saldo añadido a ${state.data.targetUser}. Nuevo saldo: $${(currentBal + amount).toFixed(2)}`, adminKeyboard);
+                
+                // --- NUEVO: NOTIFICAR AL USUARIO DEL SALDO AÑADIDO ---
+                const authData = await get(ref(db, 'telegram_auth'));
+                let targetTgId = null;
+                if (authData.exists()) {
+                    authData.forEach(child => {
+                        if (child.val() === foundUid) targetTgId = child.key;
+                    });
+                }
+                if (targetTgId) {
+                    bot.sendMessage(targetTgId, `💰 *¡NUEVO SALDO DISPONIBLE!*\nEl administrador te ha añadido *$${amount.toFixed(2)} USD* a tu cuenta.\n\nNuevo saldo total: *$${(currentBal + amount).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
+                }
+
             } else {
                 bot.sendMessage(chatId, `❌ Usuario no encontrado.`, adminKeyboard);
             }
@@ -176,6 +187,14 @@ bot.on('message', async (msg) => {
             userStates[chatId] = null;
             return;
         }
+
+        // --- NUEVO FLUJO: SUBIR/EDITAR ARCHIVO (MENSAJE GLOBAL) ---
+        if (state.step === 'UPLOAD_FILE_MSG') {
+            await set(ref(db, 'global_settings/file_message'), text);
+            bot.sendMessage(chatId, `✅ Mensaje guardado correctamente. Los usuarios ya pueden verlo tocando en "📂 Ver archivos".`, adminKeyboard);
+            userStates[chatId] = null;
+            return;
+        }
     }
 
     // --- ACCIONES DE LOS BOTONES DE ABAJO (MENÚ PRINCIPAL) ---
@@ -188,6 +207,16 @@ bot.on('message', async (msg) => {
     if (text === '💳 Recargas') {
         const rechargeInline = { inline_keyboard: [[{ text: '💬 Enviar Comprobante a WhatsApp', url: 'https://wa.me/573142369516' }]] };
         return bot.sendMessage(chatId, `💳 *RECARGAS*\n\n1. Envía a Nequi: 3214701288\n2. Toca el botón de abajo para reportarlo.`, { parse_mode: 'Markdown', reply_markup: rechargeInline });
+    }
+
+    // --- NUEVA ACCIÓN: VER ARCHIVOS ---
+    if (text === '📂 Ver archivos') {
+        const fileSnap = await get(ref(db, 'global_settings/file_message'));
+        if (fileSnap.exists() && fileSnap.val()) {
+            return bot.sendMessage(chatId, `📂 *ARCHIVOS DE ADMINISTRACIÓN:*\n\n${fileSnap.val()}`, { parse_mode: 'Markdown' });
+        } else {
+            return bot.sendMessage(chatId, `📂 Aún no hay archivos o mensajes disponibles.`);
+        }
     }
 
     if (text === '🛒 Tienda') {
@@ -229,6 +258,12 @@ bot.on('message', async (msg) => {
             });
             return bot.sendMessage(chatId, `📦 Selecciona a qué producto vas a agregarle Keys:`, { reply_markup: { inline_keyboard: inlineKeyboard } });
         }
+
+        // --- NUEVA ACCIÓN ADMIN: SUBIR ARCHIVO/MENSAJE ---
+        if (text === '📝 Subir/Editar Archivo') {
+            userStates[chatId] = { step: 'UPLOAD_FILE_MSG', data: {} };
+            return bot.sendMessage(chatId, '📝 Escribe el **Mensaje, Enlaces o Archivos en texto** que deseas compartir con todos los usuarios.\n\n_(Nota: Si ya hay algo subido, esto lo reemplazará)_:', { parse_mode: 'Markdown' });
+        }
     }
 });
 
@@ -265,6 +300,9 @@ bot.on('callback_query', async (query) => {
         if (product.keys && Object.keys(product.keys).length > 0) {
             const firstKeyId = Object.keys(product.keys)[0];
             const keyToDeliver = product.keys[firstKeyId];
+            
+            // Calculamos cuánto stock va a quedar (total actual menos 1 que estamos vendiendo)
+            const stockRestante = Object.keys(product.keys).length - 1;
 
             const updates = {};
             updates[`products/${productId}/keys/${firstKeyId}`] = null; 
@@ -275,6 +313,12 @@ bot.on('callback_query', async (query) => {
 
             await update(ref(db), updates);
             bot.sendMessage(chatId, `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``, { parse_mode: 'Markdown' });
+
+            // --- NUEVO: AVISAR AL ADMIN SI EL STOCK LLEGÓ A CERO ---
+            if (stockRestante === 0) {
+                bot.sendMessage(ADMIN_ID, `⚠️ *¡ALERTA DE INVENTARIO!*\n\nEl producto *${product.name}* se acaba de quedar en **0 Keys**.\n\nPor favor entra al menú y usa "🔑 Añadir Stock".`, { parse_mode: 'Markdown' });
+            }
+
         } else {
             bot.sendMessage(chatId, '❌ Producto agotado justo ahora.');
         }
