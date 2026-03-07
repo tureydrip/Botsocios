@@ -20,9 +20,6 @@ const db = getDatabase(app);
 
 // SISTEMA DE ESTADOS (Para evitar usar comandos)
 const userStates = {}; 
-/* Ejemplo de estructura de estado:
-userStates[chatId] = { step: 'WAITING_FOR_USERNAME', data: { amount: 10 } }
-*/
 
 // TECLADOS PRINCIPALES (Botones de abajo)
 const userKeyboard = {
@@ -36,11 +33,10 @@ const userKeyboard = {
     }
 };
 
+// TECLADO DE ADMIN (Solo botones de administrador)
 const adminKeyboard = {
     reply_markup: {
         keyboard: [
-            [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }],
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
             [{ text: '💰 Añadir Saldo' }, { text: '❌ Cancelar Acción' }]
         ],
@@ -121,12 +117,33 @@ bot.on('message', async (msg) => {
 
             if (foundUid) {
                 const updates = {};
-                updates[`users/${foundUid}/balance`] = currentBal + amount;
+                const nuevoSaldo = currentBal + amount;
+                updates[`users/${foundUid}/balance`] = nuevoSaldo;
                 const rechRef = push(ref(db, `users/${foundUid}/recharges`));
                 updates[`users/${foundUid}/recharges/${rechRef.key}`] = { amount: amount, date: Date.now() };
                 
                 await update(ref(db), updates);
-                bot.sendMessage(chatId, `✅ Saldo añadido a ${state.data.targetUser}. Nuevo saldo: $${(currentBal + amount).toFixed(2)}`, adminKeyboard);
+                
+                // Confirmación para el Admin
+                bot.sendMessage(chatId, `✅ Saldo añadido a ${state.data.targetUser}. Nuevo saldo: $${nuevoSaldo.toFixed(2)}`, adminKeyboard);
+
+                // Notificación al usuario que recibió el saldo
+                const telegramAuthSnap = await get(ref(db, 'telegram_auth'));
+                let targetTgId = null;
+                
+                if (telegramAuthSnap.exists()) {
+                    telegramAuthSnap.forEach(child => {
+                        // child.key es el ID de Telegram, child.val() es el UID de Firebase
+                        if (child.val() === foundUid) {
+                            targetTgId = child.key;
+                        }
+                    });
+                }
+
+                if (targetTgId) {
+                    bot.sendMessage(targetTgId, `tu papá luck xit te puso : ${amount} de saldo nuevo saldo:${nuevoSaldo.toFixed(2)}`);
+                }
+
             } else {
                 bot.sendMessage(chatId, `❌ Usuario no encontrado.`, adminKeyboard);
             }
