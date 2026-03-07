@@ -19,7 +19,7 @@ const db = getDatabase(app);
 // --- 2. CONFIGURACIÓN DE LOS BOTS ---
 
 // BOT 1: TEMO STORE (Bot Original)
-const token = '8240591970:AAEAPtTNdanUdR0tXZDjFC9hcdxsdmQFuGI'; 
+const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ'; 
 const bot = new TelegramBot(token, { polling: true });
 
 // BOT 2: TIKTOK GRATIS (Bot Nuevo)
