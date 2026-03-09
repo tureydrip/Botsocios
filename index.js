@@ -7,8 +7,9 @@ const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ';
 const bot = new TelegramBot(token, { polling: true });
 const ADMIN_ID = 7710633235; 
 
-// URL base de tu servidor Python (Asegúrate de que coincida con el puerto donde corre Flask)
-const PYTHON_API_URL = 'http://localhost:8081';
+// ⚠️ IMPORTANTE: Pon la URL pública de tu servidor Flask aquí (sin el / al final)
+// Si usas variables de entorno en Railway, puedes usar process.env.PYTHON_API_URL
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'PON_AQUI_LA_URL_PUBLICA_DE_TU_FLASK';
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
@@ -24,13 +25,12 @@ const db = getDatabase(app);
 // SISTEMA DE ESTADOS 
 const userStates = {}; 
 
-// --- TECLADOS ACTUALIZADOS ---
 const userKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
             [{ text: '💳 Recargas' }, { text: '🔄 Solicitar Reembolso' }],
-            [{ text: '🎥 Descargar Video' }] // <-- NUEVO BOTÓN
+            [{ text: '🎥 Descargar Video' }] 
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -42,7 +42,7 @@ const adminKeyboard = {
         keyboard: [
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
             [{ text: '💰 Añadir Saldo' }, { text: '📢 Mensaje Global' }],
-            [{ text: '🔄 Revisar Reembolsos' }, { text: '⚙️ Ajustes Descargas' }], // <-- NUEVO BOTÓN ADMIN
+            [{ text: '🔄 Revisar Reembolsos' }, { text: '⚙️ Ajustes Descargas' }], 
             [{ text: '🎥 Descargar Video' }, { text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
@@ -50,14 +50,12 @@ const adminKeyboard = {
     }
 };
 
-// MIDDLEWARE: Verifica si el usuario está autorizado en la web
 async function getAuthUser(telegramId) {
     const authSnap = await get(ref(db, `telegram_auth/${telegramId}`));
     if (authSnap.exists()) return authSnap.val();
     return null;
 }
 
-// 1. INICIO OBLIGATORIO DE TELEGRAM
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
@@ -78,7 +76,6 @@ bot.onText(/\/start/, async (msg) => {
     bot.sendMessage(chatId, `${greeting}\nUsa los botones de abajo para navegar.`, { parse_mode: 'Markdown', ...keyboard });
 });
 
-// 2. MANEJADOR DE MENSAJES (Texto y Fotos)
 bot.on('message', async (msg) => {
     if (msg.text === '/start') return;
     if (!msg.text && !msg.photo) return;
@@ -92,13 +89,11 @@ bot.on('message', async (msg) => {
     
     const keyboard = (tgId === ADMIN_ID) ? adminKeyboard : userKeyboard;
 
-    // --- CANCELAR CUALQUIER ACCIÓN EN CURSO ---
     if (text === '❌ Cancelar Acción') {
         userStates[chatId] = null;
         return bot.sendMessage(chatId, '✅ Acción cancelada. ¿Qué deseas hacer ahora?', adminKeyboard);
     }
 
-    // --- MANEJO DE ENVÍO DE COMPROBANTES (FOTOS) ---
     if (msg.photo && userStates[chatId] && userStates[chatId].step === 'WAITING_FOR_RECEIPT') {
         const stateData = userStates[chatId].data; 
         const username = stateData.username;
@@ -125,11 +120,10 @@ bot.on('message', async (msg) => {
 
     if (!msg.text) return; 
 
-    // --- FLUJOS DE ESTADO ---
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
-        // --- NUEVO: FLUJO PARA PROCESAR URL DE VIDEO ---
+        // --- FLUJO CORREGIDO PARA DESCARGAS ---
         if (state.step === 'WAITING_FOR_VIDEO_URL') {
             const url = text.trim();
             const isTikTok = url.includes('tiktok.com') || url.includes('vm.tiktok.com');
@@ -142,17 +136,14 @@ bot.on('message', async (msg) => {
             bot.sendMessage(chatId, '⏳ Analizando enlace y verificando saldo...');
 
             try {
-                // Verificar si la descarga es gratuita globalmente (Admin toggle)
                 const settingsSnap = await get(ref(db, 'settings/downloads_free'));
                 const isFree = settingsSnap.val() || false;
                 
                 let cost = 0;
-                // Si NO es admin y NO está gratis la función, asignamos el precio
                 if (tgId !== ADMIN_ID && !isFree) {
                     cost = isYouTube ? 0.10 : 0.05;
                 }
 
-                // Verificar saldo del usuario en Firebase
                 const userSnap = await get(ref(db, `users/${webUid}`));
                 const currentBal = parseFloat(userSnap.val().balance || 0);
 
@@ -161,56 +152,59 @@ bot.on('message', async (msg) => {
                     return bot.sendMessage(chatId, `❌ Saldo insuficiente. Necesitas $${cost} USD para esta descarga. Tu saldo es: $${currentBal.toFixed(2)} USD.`, keyboard);
                 }
 
-                // Parámetros para enviar al servidor Flask
                 const params = new URLSearchParams();
                 params.append('url', url);
 
-                // 1. Obtener información previa (Para checar el límite de 20 min en YouTube)
+                // 1. Obtener información previa
                 const previewRes = await fetch(`${PYTHON_API_URL}/preview`, { method: 'POST', body: params });
+                if (!previewRes.ok) throw new Error(`Error HTTP de Python: ${previewRes.status}`);
+                
                 const previewData = await previewRes.json();
-
                 if (previewData.error) throw new Error(previewData.error);
 
-                // Límite de YouTube a 20 minutos (1200 segundos)
                 if (isYouTube && previewData.duration > 1200) {
                     userStates[chatId] = null;
                     return bot.sendMessage(chatId, '❌ El video de YouTube excede el límite permitido de 20 minutos.', keyboard);
                 }
 
-                // 2. Cobrar saldo si aplica antes de hacer la descarga pesada
                 if (cost > 0) {
                     const nuevoSaldo = currentBal - cost;
                     await update(ref(db), { [`users/${webUid}/balance`]: nuevoSaldo });
                     bot.sendMessage(chatId, `💸 Se han descontado *$${cost} USD* de tu saldo. Iniciando descarga...`, { parse_mode: 'Markdown' });
                 } else if (tgId === ADMIN_ID) {
-                    bot.sendMessage(chatId, `👑 Admin supremo, descargando gratis...`);
+                    bot.sendMessage(chatId, `👑 Admin supremo, procesando gratis...`);
                 } else {
                     bot.sendMessage(chatId, `✨ Función gratuita activada. Iniciando descarga...`);
                 }
 
-                bot.sendMessage(chatId, '📥 Descargando archivo desde los servidores, esto tomará unos segundos...');
+                bot.sendMessage(chatId, '📥 Descargando archivo desde el servidor, esto tomará unos segundos...');
 
-                // 3. Solicitar la descarga del archivo al servidor Python
+                // 2. Solicitar la descarga
                 params.append('kind', 'video');
                 const downloadRes = await fetch(`${PYTHON_API_URL}/download`, { method: 'POST', body: params });
 
-                if (!downloadRes.ok) throw new Error("Error en el servidor de descargas (Python).");
+                if (!downloadRes.ok) throw new Error("Error en el servidor de descargas (Python) al descargar.");
 
                 const arrayBuffer = await downloadRes.arrayBuffer();
                 const buffer = Buffer.from(arrayBuffer);
 
-                // 4. Enviar el video a Telegram
+                // 3. Enviar a Telegram con Opciones de Archivo (VITAL PARA RAILWAY)
+                const fileName = isTikTok ? 'tiktok_video.mp4' : 'youtube_video.mp4';
+                
                 await bot.sendVideo(chatId, buffer, { 
                     caption: `✅ *Video descargado exitosamente*\n\n🤖 *LUCK XIT OFC*`,
                     parse_mode: 'Markdown'
+                }, {
+                    filename: fileName,
+                    contentType: 'video/mp4'
                 });
 
                 userStates[chatId] = null;
 
             } catch (error) {
-                console.error("Error en descargas:", error);
+                // Imprimir el error exacto en los logs de Railway para que puedas debugear
+                console.error("🔴 ERROR EN DESCARGA:", error.message || error);
                 
-                // Sistema de reembolso automático si falló el envío por peso u error del servidor
                 let costToRefund = 0;
                 if (tgId !== ADMIN_ID) {
                     const settingsSnap = await get(ref(db, 'settings/downloads_free'));
@@ -222,16 +216,15 @@ bot.on('message', async (msg) => {
                     const userSnap = await get(ref(db, `users/${webUid}`));
                     const currentBal = parseFloat(userSnap.val().balance || 0);
                     await update(ref(db), { [`users/${webUid}/balance`]: currentBal + costToRefund });
-                    bot.sendMessage(chatId, '⚠️ Hubo un error al descargar o el video es muy pesado para Telegram (>50MB). **Tu saldo ha sido reembolsado automáticamente.**', keyboard);
+                    bot.sendMessage(chatId, `⚠️ Error en la descarga. **Se te han devuelto $${costToRefund} USD a tu saldo.** Revisa que el enlace sea correcto y no sea muy pesado.`, keyboard);
                 } else {
-                    bot.sendMessage(chatId, '⚠️ Hubo un error al procesar el video o es demasiado pesado para enviarse por Telegram.', keyboard);
+                    bot.sendMessage(chatId, '⚠️ Hubo un error al procesar el enlace. El servidor puede estar caído o el video pesa más de 50MB (límite de Telegram).', keyboard);
                 }
                 userStates[chatId] = null;
             }
             return;
         }
 
-        // --- FLUJO PARA EL USUARIO SOLICITANDO REEMBOLSO ---
         if (state.step === 'WAITING_FOR_USER_REFUND_KEY') {
             const searchKey = text.trim();
             bot.sendMessage(chatId, '🔎 Verificando tu solicitud de reembolso...');
@@ -286,7 +279,6 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: BUSCAR LA KEY MANUALMENTE (ADMIN)
         if (state.step === 'WAITING_FOR_REFUND_KEY') {
             const searchKey = text.trim();
             bot.sendMessage(chatId, '🔎 Buscando la Key en los registros globales...');
@@ -340,7 +332,6 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: USUARIO ESCRIBE CUÁNTO QUIERE RECARGAR
         if (state.step === 'WAITING_FOR_RECHARGE_AMOUNT') {
             const amountUsd = parseFloat(text.replace(',', '.').replace('$', ''));
             const minUsd = state.data.minUsd;
@@ -374,7 +365,6 @@ bot.on('message', async (msg) => {
             return bot.sendMessage(chatId, mensajePago, { parse_mode: 'Markdown', reply_markup: rechargeInline });
         }
 
-        // FLUJO: MENSAJE GLOBAL (ADMIN)
         if (state.step === 'WAITING_FOR_BROADCAST_MESSAGE') {
             bot.sendMessage(chatId, '⏳ Enviando mensaje a todos los usuarios...');
             const telegramAuthSnap = await get(ref(db, 'telegram_auth'));
@@ -393,7 +383,6 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: AÑADIR SALDO MANUAL (ADMIN)
         if (state.step === 'ADD_BALANCE_USER') {
             state.data.targetUser = text.trim();
             state.step = 'ADD_BALANCE_AMOUNT';
@@ -445,7 +434,6 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: CREAR PRODUCTO (ADMIN)
         if (state.step === 'CREATE_PROD_NAME') {
             state.data.name = text;
             state.step = 'CREATE_PROD_PRICE';
@@ -466,7 +454,6 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // FLUJO: AÑADIR STOCK (KEYS) (ADMIN)
         if (state.step === 'ADD_STOCK_KEYS') {
             const keysRaw = text;
             const cleanKeys = keysRaw.split(/[\n,\s]+/).map(k => k.trim()).filter(k => k.length > 0);
@@ -489,9 +476,6 @@ bot.on('message', async (msg) => {
         }
     }
 
-    // --- ACCIONES DE LOS BOTONES DE ABAJO (MENÚ PRINCIPAL) ---
-
-    // --- NUEVO: BOTÓN DE DESCARGAR VIDEO ---
     if (text === '🎥 Descargar Video') {
         userStates[chatId] = { step: 'WAITING_FOR_VIDEO_URL', data: { webUid: webUid } };
         return bot.sendMessage(chatId, '🎥 *DESCARGADOR LUCK XIT*\n\nEnvía el enlace del video de **TikTok** o **YouTube** que deseas descargar.\n\n💸 *Costos:*\n- YouTube (Max 20 min): $0.10 USD\n- TikTok: $0.05 USD\n\n_(Para cancelar, escribe cualquier comando o presiona tu perfil)_', { parse_mode: 'Markdown' });
@@ -551,14 +535,12 @@ bot.on('message', async (msg) => {
         return bot.sendMessage(chatId, `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
     }
 
-    // --- ACCIONES ADMIN (BOTONES DE ABAJO) ---
     if (tgId === ADMIN_ID) {
 
-        // --- NUEVO: ALTERNAR FUNCIONES DE DESCARGA (PAGA/GRATIS) ---
         if (text === '⚙️ Ajustes Descargas') {
             const settingsSnap = await get(ref(db, 'settings/downloads_free'));
             const isFree = settingsSnap.val() || false;
-            const newState = !isFree; // Invierte el valor actual
+            const newState = !isFree; 
             
             await update(ref(db), { 'settings/downloads_free': newState });
             
@@ -598,7 +580,6 @@ bot.on('message', async (msg) => {
     }
 });
 
-// 3. MANEJADOR DE BOTONES EN LÍNEA (Callback Queries)
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const tgId = query.from.id;
