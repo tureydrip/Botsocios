@@ -29,7 +29,7 @@ const userKeyboard = {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
             [{ text: '💳 Recargas' }, { text: '🔄 Solicitar Reembolso' }],
-            [{ text: '🎥 Descargar Video' }] 
+            [{ text: '🎥 Descargar Video' }, { text: '🎟️ Canjear Cupón' }] 
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -39,10 +39,10 @@ const userKeyboard = {
 const adminKeyboard = {
     reply_markup: {
         keyboard: [
-            [{ text: '📦 Crear Producto' }, { text: '📝 Editar Producto' }],
-            [{ text: '🗑️ Eliminar Producto' }, { text: '🔑 Añadir Stock' }],
-            [{ text: '💰 Añadir Saldo' }, { text: '📢 Mensaje Global' }],
-            [{ text: '🔄 Revisar Reembolsos' }, { text: '⚙️ Ajustes Descargas' }], 
+            [{ text: '📦 Crear Producto' }, { text: '📝 Editar Producto' }, { text: '🗑️ Eliminar Producto' }],
+            [{ text: '🔑 Añadir Stock' }, { text: '💰 Añadir Saldo' }, { text: '📢 Mensaje Global' }],
+            [{ text: '🔄 Revisar Reembolsos' }, { text: '⚙️ Ajustes Descargas' }, { text: '📊 Estadísticas' }], 
+            [{ text: '🎟️ Crear Cupón' }, { text: '🔨 Gest. Usuarios' }, { text: '🛠️ Mantenimiento' }],
             [{ text: '🎥 Descargar Video' }, { text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
@@ -71,7 +71,7 @@ bot.onText(/\/start/, async (msg) => {
     const userSnap = await get(ref(db, `users/${webUid}`));
     const webUser = userSnap.val();
     const keyboard = (tgId === ADMIN_ID) ? adminKeyboard : userKeyboard;
-    const greeting = (tgId === ADMIN_ID) ? `👑 ¡Bienvenido Admin Supremo, *${webUser.username}*!` : `🌌 Bienvenido a SociosXIT, *${webUser.username}*.`;
+    const greeting = (tgId === ADMIN_ID) ? `👑 ¡Bienvenido Admin Supremo, *${webUser.username}*!` : `🌌 Bienvenido a LUCK XIT, *${webUser.username}*.`;
 
     bot.sendMessage(chatId, `${greeting}\nUsa los botones de abajo para navegar.`, { parse_mode: 'Markdown', ...keyboard });
 });
@@ -87,6 +87,23 @@ bot.on('message', async (msg) => {
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso denegado. Escribe /start para verificar.`);
     
+    // --- VERIFICACIONES GLOBALES (MANTENIMIENTO Y BANEOS) ---
+    const settingsSnap = await get(ref(db, 'settings'));
+    const isMaintenance = settingsSnap.val()?.maintenance || false;
+    
+    const userSnap = await get(ref(db, `users/${webUid}`));
+    const webUser = userSnap.val();
+
+    if (tgId !== ADMIN_ID) {
+        if (webUser.banned) {
+            return bot.sendMessage(chatId, '🚫 *ESTÁS BANEADO*\n\nHas sido bloqueado del sistema LUCK XIT por violar nuestras políticas o reglas. Si crees que es un error, contacta a soporte.', { parse_mode: 'Markdown' });
+        }
+        if (isMaintenance) {
+            return bot.sendMessage(chatId, '🛠️ *MODO MANTENIMIENTO ACTIVO*\n\nEstamos haciendo unas mejoras rápidas en el bot. Volveremos a estar en línea muy pronto. ¡Gracias por tu paciencia!', { parse_mode: 'Markdown' });
+        }
+    }
+    // --------------------------------------------------------
+
     const keyboard = (tgId === ADMIN_ID) ? adminKeyboard : userKeyboard;
 
     if (text === '❌ Cancelar Acción') {
@@ -154,9 +171,95 @@ bot.on('message', async (msg) => {
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
-        // PROTECCIÓN ANTI-BUG
         if (state.step === 'WAITING_FOR_RECEIPT' || state.step === 'WAITING_FOR_USER_REFUND_PROOF') {
             return bot.sendMessage(chatId, '❌ Debes adjuntar una **foto (captura de pantalla)** para continuar.\n\n_(Si deseas salir, usa el menú o escribe "❌ Cancelar Acción")_', { parse_mode: 'Markdown' });
+        }
+
+        if (state.step === 'REDEEM_COUPON') {
+            const code = text.trim().toUpperCase();
+            const couponSnap = await get(ref(db, `coupons/${code}`));
+            
+            if (!couponSnap.exists()) {
+                userStates[chatId] = null;
+                return bot.sendMessage(chatId, '❌ *CUPÓN INVÁLIDO*\n\nEse código no existe o lo has escrito mal.', { parse_mode: 'Markdown', ...keyboard });
+            }
+
+            const couponData = couponSnap.val();
+            const userUsedCouponsSnap = await get(ref(db, `users/${webUid}/used_coupons/${code}`));
+            
+            if (userUsedCouponsSnap.exists()) {
+                userStates[chatId] = null;
+                return bot.sendMessage(chatId, '⚠️ *YA USASTE ESTE CUPÓN*\n\nSolo se puede canjear una vez por cuenta.', { parse_mode: 'Markdown', ...keyboard });
+            }
+
+            // Canjear
+            const currentBal = parseFloat(webUser.balance || 0);
+            const reward = parseFloat(couponData.amount);
+            const nuevoSaldo = currentBal + reward;
+
+            const updates = {};
+            updates[`users/${webUid}/balance`] = nuevoSaldo;
+            updates[`users/${webUid}/used_coupons/${code}`] = true;
+
+            await update(ref(db), updates);
+            userStates[chatId] = null;
+            return bot.sendMessage(chatId, `🎉 *¡CUPÓN CANJEADO CON ÉXITO!*\n\nSe han añadido *$${reward} USD* a tu saldo.\n💰 *Nuevo saldo:* $${nuevoSaldo.toFixed(2)} USD`, { parse_mode: 'Markdown', ...keyboard });
+        }
+
+        if (state.step === 'MANAGE_USER' && tgId === ADMIN_ID) {
+            const username = text.trim();
+            const usersSnap = await get(ref(db, 'users'));
+            let targetUid = null;
+            let targetUser = null;
+
+            usersSnap.forEach(u => {
+                if (u.val().username === username) {
+                    targetUid = u.key;
+                    targetUser = u.val();
+                }
+            });
+
+            if (!targetUid) return bot.sendMessage(chatId, '❌ Usuario no encontrado. Verifica mayúsculas y minúsculas.');
+
+            let totalSpent = 0;
+            if (targetUser.history) {
+                Object.values(targetUser.history).forEach(h => totalSpent += parseFloat(h.price || 0));
+            }
+
+            const isBanned = targetUser.banned || false;
+            const statusText = isBanned ? '🔴 BANEADO' : '🟢 ACTIVO';
+            
+            const msgInfo = `👤 *GESTIÓN DE USUARIO*\n\n` +
+                            `*Nombre:* ${targetUser.username}\n` +
+                            `*Saldo:* $${parseFloat(targetUser.balance||0).toFixed(2)} USD\n` +
+                            `*Gastado Total:* $${totalSpent.toFixed(2)} USD\n` +
+                            `*Estado:* ${statusText}`;
+
+            const userKeys = {
+                inline_keyboard: [
+                    [{ text: isBanned ? '✅ Desbanear Usuario' : '🔨 Banear Usuario', callback_data: `toggleban_${targetUid}` }]
+                ]
+            };
+
+            bot.sendMessage(chatId, msgInfo, { parse_mode: 'Markdown', reply_markup: userKeys });
+            userStates[chatId] = null;
+            return;
+        }
+
+        if (state.step === 'CREATE_COUPON_CODE' && tgId === ADMIN_ID) {
+            state.data.code = text.trim().toUpperCase();
+            state.step = 'CREATE_COUPON_AMOUNT';
+            return bot.sendMessage(chatId, '💵 Escribe la cantidad en USD que dará este cupón (ej: 1.5):');
+        }
+
+        if (state.step === 'CREATE_COUPON_AMOUNT' && tgId === ADMIN_ID) {
+            const amount = parseFloat(text);
+            if (isNaN(amount) || amount <= 0) return bot.sendMessage(chatId, '❌ Cantidad inválida.');
+            
+            await set(ref(db, `coupons/${state.data.code}`), { amount: amount });
+            bot.sendMessage(chatId, `✅ *Cupón creado.*\n\nCódigo: \`${state.data.code}\`\nRecompensa: $${amount} USD`, { parse_mode: 'Markdown', ...adminKeyboard });
+            userStates[chatId] = null;
+            return;
         }
 
         if (state.step === 'WAITING_FOR_REJECT_REASON' && tgId === ADMIN_ID) {
@@ -214,8 +317,7 @@ bot.on('message', async (msg) => {
                     cost = isYouTube ? 0.10 : 0.05;
                 }
 
-                const userSnap = await get(ref(db, `users/${webUid}`));
-                const currentBal = parseFloat(userSnap.val().balance || 0);
+                const currentBal = parseFloat(webUser.balance || 0);
 
                 if (currentBal < cost) {
                     userStates[chatId] = null;
@@ -279,8 +381,8 @@ bot.on('message', async (msg) => {
                 }
 
                 if (costToRefund > 0) {
-                    const userSnap = await get(ref(db, `users/${webUid}`));
-                    const currentBal = parseFloat(userSnap.val().balance || 0);
+                    const reCheckUserSnap = await get(ref(db, `users/${webUid}`));
+                    const currentBal = parseFloat(reCheckUserSnap.val().balance || 0);
                     await update(ref(db), { [`users/${webUid}/balance`]: currentBal + costToRefund });
                     bot.sendMessage(chatId, `⚠️ Error en la descarga. **Se te han devuelto $${costToRefund} USD a tu saldo.** Revisa que el enlace sea correcto y no sea muy pesado.`, keyboard);
                 } else {
@@ -294,24 +396,18 @@ bot.on('message', async (msg) => {
         if (state.step === 'WAITING_FOR_USER_REFUND_KEY') {
             const searchKey = text.trim();
             bot.sendMessage(chatId, '🔎 Verificando tu solicitud de reembolso...');
-
-            const userUid = state.data.webUid;
-            const userSnap = await get(ref(db, `users/${userUid}`));
             
             let found = false;
             let foundData = null;
 
-            if (userSnap.exists()) {
-                const userData = userSnap.val();
-                if (userData.history) {
-                    Object.keys(userData.history).forEach(histId => {
-                        const compra = userData.history[histId];
-                        if (compra.key === searchKey) {
-                            found = true;
-                            foundData = { uid: userUid, username: userData.username, histId: histId, compra: compra, targetTgId: tgId };
-                        }
-                    });
-                }
+            if (webUser.history) {
+                Object.keys(webUser.history).forEach(histId => {
+                    const compra = webUser.history[histId];
+                    if (compra.key === searchKey) {
+                        found = true;
+                        foundData = { uid: webUid, username: webUser.username, histId: histId, compra: compra, targetTgId: tgId };
+                    }
+                });
             }
 
             if (found) {
@@ -320,7 +416,7 @@ bot.on('message', async (msg) => {
                     userStates[chatId] = null;
                 } else {
                     // VERIFICACIÓN DE GARANTÍA
-                    const warrantyHours = foundData.compra.warrantyHours || 0; // 0 = sin límite
+                    const warrantyHours = foundData.compra.warrantyHours || 0; 
                     const hoursPassed = (Date.now() - foundData.compra.date) / (1000 * 60 * 60);
                     
                     if (warrantyHours > 0 && hoursPassed > warrantyHours) {
@@ -550,6 +646,11 @@ bot.on('message', async (msg) => {
         }
     }
 
+    if (text === '🎟️ Canjear Cupón') {
+        userStates[chatId] = { step: 'REDEEM_COUPON', data: {} };
+        return bot.sendMessage(chatId, '🎁 *CANJEAR CUPÓN*\n\nEscribe el código promocional:', { parse_mode: 'Markdown' });
+    }
+
     if (text === '🎥 Descargar Video') {
         userStates[chatId] = { step: 'WAITING_FOR_VIDEO_URL', data: { webUid: webUid } };
         return bot.sendMessage(chatId, '🎥 *DESCARGADOR LUCK XIT*\n\nEnvía el enlace del video de **TikTok** o **YouTube** que deseas descargar.\n\n💸 *Costos:*\n- YouTube (Max 20 min): $0.10 USD\n- TikTok: $0.05 USD\n\n_(Para cancelar, escribe cualquier comando o presiona tu perfil)_', { parse_mode: 'Markdown' });
@@ -561,18 +662,13 @@ bot.on('message', async (msg) => {
     }
 
     if (text === '👤 Mi Perfil') {
-        const userSnap = await get(ref(db, `users/${webUid}`));
-        const user = userSnap.val();
-        return bot.sendMessage(chatId, `👤 *PERFIL DE SociosXIT*\n\nUsuario: ${user.username}\n💰 Saldo: *$${parseFloat(user.balance).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, `👤 *PERFIL LUCK XIT*\n\nUsuario: ${webUser.username}\n💰 Saldo: *$${parseFloat(webUser.balance).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
     }
 
     if (text === '💳 Recargas') {
-        const userSnap = await get(ref(db, `users/${webUid}`));
-        const userData = userSnap.val();
-
         let totalRecharged = 0;
-        if (userData.recharges) {
-            Object.values(userData.recharges).forEach(r => {
+        if (webUser.recharges) {
+            Object.values(webUser.recharges).forEach(r => {
                 totalRecharged += parseFloat(r.amount || 0);
             });
         }
@@ -611,7 +707,65 @@ bot.on('message', async (msg) => {
 
     if (tgId === ADMIN_ID) {
         
-        // --- NUEVOS COMANDOS DE ADMIN ---
+        if (text === '📊 Estadísticas') {
+            bot.sendMessage(chatId, '⏳ Recopilando datos del servidor...');
+            const usersSnap = await get(ref(db, 'users'));
+            const productsSnap = await get(ref(db, 'products'));
+            
+            let totalUsers = 0; let totalRecharges = 0;
+            let totalSalesUsd = 0; let totalSalesCount = 0;
+            
+            if (usersSnap.exists()) {
+                usersSnap.forEach(u => {
+                    totalUsers++;
+                    const ud = u.val();
+                    if (ud.recharges) Object.values(ud.recharges).forEach(r => totalRecharges += parseFloat(r.amount||0));
+                    if (ud.history) {
+                        Object.values(ud.history).forEach(h => {
+                            totalSalesCount++;
+                            totalSalesUsd += parseFloat(h.price||0);
+                        });
+                    }
+                });
+            }
+            
+            let activeProducts = 0; let totalKeys = 0;
+            if (productsSnap.exists()) {
+                productsSnap.forEach(p => {
+                    activeProducts++;
+                    if (p.val().keys) totalKeys += Object.keys(p.val().keys).length;
+                });
+            }
+            
+            const msgStats = `📊 *DASHBOARD LUCK XIT*\n\n` +
+            `👥 *Usuarios Totales:* ${totalUsers}\n` +
+            `💵 *Dinero Recargado:* $${totalRecharges.toFixed(2)} USD\n` +
+            `🛍️ *Ventas Totales:* ${totalSalesCount} ($${totalSalesUsd.toFixed(2)} USD)\n\n` +
+            `📦 *Productos Activos:* ${activeProducts}\n` +
+            `🔑 *Keys en Stock:* ${totalKeys}`;
+            
+            return bot.sendMessage(chatId, msgStats, {parse_mode: 'Markdown'});
+        }
+
+        if (text === '🎟️ Crear Cupón') {
+            userStates[chatId] = { step: 'CREATE_COUPON_CODE', data: {} };
+            return bot.sendMessage(chatId, '🎟️ *CREADOR DE CUPONES*\n\nEscribe la palabra o código promocional que los usuarios van a canjear (ej: LUCKXIT2026):', { parse_mode: 'Markdown' });
+        }
+
+        if (text === '🔨 Gest. Usuarios') {
+            userStates[chatId] = { step: 'MANAGE_USER', data: {} };
+            return bot.sendMessage(chatId, '🔨 Escribe el **Username** exacto del usuario que deseas gestionar (Banear/Desbanear o Ver):', { parse_mode: 'Markdown' });
+        }
+
+        if (text === '🛠️ Mantenimiento') {
+            const settingsSnap = await get(ref(db, 'settings/maintenance'));
+            const isMaint = settingsSnap.val() || false;
+            const newMaint = !isMaint;
+            
+            await update(ref(db), { 'settings/maintenance': newMaint });
+            return bot.sendMessage(chatId, `🛠️ *MODO MANTENIMIENTO*\n\nEl acceso a la tienda y comandos para usuarios está: **${newMaint ? 'CERRADO (En Mantenimiento) 🔴' : 'ABIERTO (Normal) 🟢'}**`, { parse_mode: 'Markdown' });
+        }
+
         if (text === '🗑️ Eliminar Producto') {
             const productsSnap = await get(ref(db, 'products'));
             if (!productsSnap.exists()) return bot.sendMessage(chatId, '❌ No hay productos creados.');
@@ -633,7 +787,6 @@ bot.on('message', async (msg) => {
             });
             return bot.sendMessage(chatId, `📝 *EDITAR PRODUCTO*\nSelecciona el producto que deseas modificar:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
         }
-        // --------------------------------
 
         if (text === '⚙️ Ajustes Descargas') {
             const settingsSnap = await get(ref(db, 'settings/downloads_free'));
@@ -687,7 +840,27 @@ bot.on('callback_query', async (query) => {
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
 
-    // --- CALLBACKS EDICIÓN Y ELIMINACIÓN ---
+    // --- PROTECCIÓN PARA BOTONES INLINE (BANEADOS Y MANTENIMIENTO) ---
+    if (tgId !== ADMIN_ID) {
+        const settingsSnap = await get(ref(db, 'settings'));
+        const isMaintenance = settingsSnap.val()?.maintenance || false;
+        const userSnap = await get(ref(db, `users/${webUid}`));
+        
+        if (userSnap.val()?.banned || isMaintenance) return; // Se ignora silenciosamente si hacen clic estando baneados/en mantenimiento
+    }
+    // ------------------------------------------------------------------
+
+    if (data.startsWith('toggleban_') && tgId === ADMIN_ID) {
+        const targetUid = data.split('_')[1];
+        const userSnap = await get(ref(db, `users/${targetUid}`));
+        if (userSnap.exists()) {
+            const isBanned = userSnap.val().banned || false;
+            await update(ref(db), { [`users/${targetUid}/banned`]: !isBanned });
+            bot.editMessageText(`✅ Estado actualizado. Usuario **${!isBanned ? 'Baneado 🔴' : 'Desbaneado 🟢'}**.`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+        }
+        return;
+    }
+
     if (data.startsWith('delprod_') && tgId === ADMIN_ID) {
         const prodId = data.split('_')[1];
         await remove(ref(db, `products/${prodId}`));
@@ -721,7 +894,6 @@ bot.on('callback_query', async (query) => {
         bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
         return;
     }
-    // ----------------------------------------
 
     if (data.startsWith('rfnd_') && tgId === ADMIN_ID) {
         const parts = data.split('_');
@@ -851,9 +1023,10 @@ bot.on('callback_query', async (query) => {
         if (product.keys && Object.keys(product.keys).length > 0) {
             const firstKeyId = Object.keys(product.keys)[0];
             const keyToDeliver = product.keys[firstKeyId];
-            
-            // Aquí extraemos la garantía del producto para guardarla en el historial
             const warrantyHours = product.warranty || 0; 
+
+            // CÁLCULO DE STOCK RESTANTE PARA ALERTA AL ADMIN
+            const keysRestantes = Object.keys(product.keys).length - 1; 
 
             const updates = {};
             updates[`products/${productId}/keys/${firstKeyId}`] = null; 
@@ -871,10 +1044,16 @@ bot.on('callback_query', async (query) => {
 
             await update(ref(db), updates);
             bot.sendMessage(chatId, `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``, { parse_mode: 'Markdown' });
+
+            // ENVIAR ALERTA DE STOCK AL ADMIN SI QUEDAN 3 O MENOS
+            if (keysRestantes <= 3) {
+                bot.sendMessage(ADMIN_ID, `⚠️ *ALERTA DE STOCK BAJO*\n\nAl producto *${product.name}* le quedan solo **${keysRestantes}** keys disponibles.`, { parse_mode: 'Markdown' });
+            }
+
         } else {
             bot.sendMessage(chatId, '❌ Producto agotado justo ahora.');
         }
     }
 });
 
-console.log('🤖 Bot sincronizado e interactivo iniciado...');
+console.log('🤖 Bot LUCK XIT PRO sincronizado e iniciado...');
