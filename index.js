@@ -7,6 +7,9 @@ const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ';
 const bot = new TelegramBot(token, { polling: true });
 const ADMIN_ID = 7710633235; 
 
+// URL base de tu servidor Python (Asegúrate de que coincida con el puerto donde corre Flask)
+const PYTHON_API_URL = 'http://localhost:8081';
+
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
     authDomain: "clientesvip-be9bd.firebaseapp.com",
@@ -21,12 +24,13 @@ const db = getDatabase(app);
 // SISTEMA DE ESTADOS 
 const userStates = {}; 
 
-// --- NUEVO: Se agregó el botón de solicitar reembolso al teclado del usuario ---
+// --- TECLADOS ACTUALIZADOS ---
 const userKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }, { text: '🔄 Solicitar Reembolso' }] 
+            [{ text: '💳 Recargas' }, { text: '🔄 Solicitar Reembolso' }],
+            [{ text: '🎥 Descargar Video' }] // <-- NUEVO BOTÓN
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -38,7 +42,8 @@ const adminKeyboard = {
         keyboard: [
             [{ text: '📦 Crear Producto' }, { text: '🔑 Añadir Stock' }],
             [{ text: '💰 Añadir Saldo' }, { text: '📢 Mensaje Global' }],
-            [{ text: '🔄 Revisar Reembolsos' }, { text: '❌ Cancelar Acción' }]
+            [{ text: '🔄 Revisar Reembolsos' }, { text: '⚙️ Ajustes Descargas' }], // <-- NUEVO BOTÓN ADMIN
+            [{ text: '🎥 Descargar Video' }, { text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -124,7 +129,109 @@ bot.on('message', async (msg) => {
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
-        // --- NUEVO: FLUJO PARA EL USUARIO SOLICITANDO REEMBOLSO ---
+        // --- NUEVO: FLUJO PARA PROCESAR URL DE VIDEO ---
+        if (state.step === 'WAITING_FOR_VIDEO_URL') {
+            const url = text.trim();
+            const isTikTok = url.includes('tiktok.com') || url.includes('vm.tiktok.com');
+            const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+
+            if (!isTikTok && !isYouTube) {
+                return bot.sendMessage(chatId, '❌ Enlace no válido. Por favor, envía un enlace válido de TikTok o YouTube.', keyboard);
+            }
+
+            bot.sendMessage(chatId, '⏳ Analizando enlace y verificando saldo...');
+
+            try {
+                // Verificar si la descarga es gratuita globalmente (Admin toggle)
+                const settingsSnap = await get(ref(db, 'settings/downloads_free'));
+                const isFree = settingsSnap.val() || false;
+                
+                let cost = 0;
+                // Si NO es admin y NO está gratis la función, asignamos el precio
+                if (tgId !== ADMIN_ID && !isFree) {
+                    cost = isYouTube ? 0.10 : 0.05;
+                }
+
+                // Verificar saldo del usuario en Firebase
+                const userSnap = await get(ref(db, `users/${webUid}`));
+                const currentBal = parseFloat(userSnap.val().balance || 0);
+
+                if (currentBal < cost) {
+                    userStates[chatId] = null;
+                    return bot.sendMessage(chatId, `❌ Saldo insuficiente. Necesitas $${cost} USD para esta descarga. Tu saldo es: $${currentBal.toFixed(2)} USD.`, keyboard);
+                }
+
+                // Parámetros para enviar al servidor Flask
+                const params = new URLSearchParams();
+                params.append('url', url);
+
+                // 1. Obtener información previa (Para checar el límite de 20 min en YouTube)
+                const previewRes = await fetch(`${PYTHON_API_URL}/preview`, { method: 'POST', body: params });
+                const previewData = await previewRes.json();
+
+                if (previewData.error) throw new Error(previewData.error);
+
+                // Límite de YouTube a 20 minutos (1200 segundos)
+                if (isYouTube && previewData.duration > 1200) {
+                    userStates[chatId] = null;
+                    return bot.sendMessage(chatId, '❌ El video de YouTube excede el límite permitido de 20 minutos.', keyboard);
+                }
+
+                // 2. Cobrar saldo si aplica antes de hacer la descarga pesada
+                if (cost > 0) {
+                    const nuevoSaldo = currentBal - cost;
+                    await update(ref(db), { [`users/${webUid}/balance`]: nuevoSaldo });
+                    bot.sendMessage(chatId, `💸 Se han descontado *$${cost} USD* de tu saldo. Iniciando descarga...`, { parse_mode: 'Markdown' });
+                } else if (tgId === ADMIN_ID) {
+                    bot.sendMessage(chatId, `👑 Admin supremo, descargando gratis...`);
+                } else {
+                    bot.sendMessage(chatId, `✨ Función gratuita activada. Iniciando descarga...`);
+                }
+
+                bot.sendMessage(chatId, '📥 Descargando archivo desde los servidores, esto tomará unos segundos...');
+
+                // 3. Solicitar la descarga del archivo al servidor Python
+                params.append('kind', 'video');
+                const downloadRes = await fetch(`${PYTHON_API_URL}/download`, { method: 'POST', body: params });
+
+                if (!downloadRes.ok) throw new Error("Error en el servidor de descargas (Python).");
+
+                const arrayBuffer = await downloadRes.arrayBuffer();
+                const buffer = Buffer.from(arrayBuffer);
+
+                // 4. Enviar el video a Telegram
+                await bot.sendVideo(chatId, buffer, { 
+                    caption: `✅ *Video descargado exitosamente*\n\n🤖 *LUCK XIT OFC*`,
+                    parse_mode: 'Markdown'
+                });
+
+                userStates[chatId] = null;
+
+            } catch (error) {
+                console.error("Error en descargas:", error);
+                
+                // Sistema de reembolso automático si falló el envío por peso u error del servidor
+                let costToRefund = 0;
+                if (tgId !== ADMIN_ID) {
+                    const settingsSnap = await get(ref(db, 'settings/downloads_free'));
+                    const isFree = settingsSnap.val() || false;
+                    if (!isFree) costToRefund = isYouTube ? 0.10 : 0.05;
+                }
+
+                if (costToRefund > 0) {
+                    const userSnap = await get(ref(db, `users/${webUid}`));
+                    const currentBal = parseFloat(userSnap.val().balance || 0);
+                    await update(ref(db), { [`users/${webUid}/balance`]: currentBal + costToRefund });
+                    bot.sendMessage(chatId, '⚠️ Hubo un error al descargar o el video es muy pesado para Telegram (>50MB). **Tu saldo ha sido reembolsado automáticamente.**', keyboard);
+                } else {
+                    bot.sendMessage(chatId, '⚠️ Hubo un error al procesar el video o es demasiado pesado para enviarse por Telegram.', keyboard);
+                }
+                userStates[chatId] = null;
+            }
+            return;
+        }
+
+        // --- FLUJO PARA EL USUARIO SOLICITANDO REEMBOLSO ---
         if (state.step === 'WAITING_FOR_USER_REFUND_KEY') {
             const searchKey = text.trim();
             bot.sendMessage(chatId, '🔎 Verificando tu solicitud de reembolso...');
@@ -138,7 +245,6 @@ bot.on('message', async (msg) => {
             if (userSnap.exists()) {
                 const userData = userSnap.val();
                 if (userData.history) {
-                    // Solo busca en el historial de este usuario específico
                     Object.keys(userData.history).forEach(histId => {
                         const compra = userData.history[histId];
                         if (compra.key === searchKey) {
@@ -155,7 +261,6 @@ bot.on('message', async (msg) => {
                 } else {
                     const dateStr = new Date(foundData.compra.date).toLocaleString('es-CO');
                     
-                    // Alerta que recibe el ADMIN
                     const msgInfo = `🔔 *NUEVA SOLICITUD DE REEMBOLSO (USUARIO)*\n\n` +
                                 `👤 *Usuario:* ${foundData.username}\n` +
                                 `📦 *Producto:* ${foundData.compra.product}\n` +
@@ -171,10 +276,7 @@ bot.on('message', async (msg) => {
                         ]
                     };
                     
-                    // Se lo envía al ADMIN
                     bot.sendMessage(ADMIN_ID, msgInfo, { parse_mode: 'Markdown', reply_markup: refundKeyboard });
-                    
-                    // Notifica al usuario
                     bot.sendMessage(chatId, '✅ Tu solicitud de reembolso ha sido enviada al administrador exitosamente. Recibirás una notificación cuando sea revisada.', keyboard);
                 }
             } else {
@@ -389,7 +491,12 @@ bot.on('message', async (msg) => {
 
     // --- ACCIONES DE LOS BOTONES DE ABAJO (MENÚ PRINCIPAL) ---
 
-    // --- NUEVO: USUARIO PIDE REEMBOLSO ---
+    // --- NUEVO: BOTÓN DE DESCARGAR VIDEO ---
+    if (text === '🎥 Descargar Video') {
+        userStates[chatId] = { step: 'WAITING_FOR_VIDEO_URL', data: { webUid: webUid } };
+        return bot.sendMessage(chatId, '🎥 *DESCARGADOR LUCK XIT*\n\nEnvía el enlace del video de **TikTok** o **YouTube** que deseas descargar.\n\n💸 *Costos:*\n- YouTube (Max 20 min): $0.10 USD\n- TikTok: $0.05 USD\n\n_(Para cancelar, escribe cualquier comando o presiona tu perfil)_', { parse_mode: 'Markdown' });
+    }
+
     if (text === '🔄 Solicitar Reembolso') {
         userStates[chatId] = { step: 'WAITING_FOR_USER_REFUND_KEY', data: { webUid: webUid } };
         return bot.sendMessage(chatId, '🔄 *SOLICITUD DE REEMBOLSO*\n\nPor favor, escribe y envía la **Key** exacta de la compra que deseas que te reembolsemos:', { parse_mode: 'Markdown' });
@@ -446,6 +553,17 @@ bot.on('message', async (msg) => {
 
     // --- ACCIONES ADMIN (BOTONES DE ABAJO) ---
     if (tgId === ADMIN_ID) {
+
+        // --- NUEVO: ALTERNAR FUNCIONES DE DESCARGA (PAGA/GRATIS) ---
+        if (text === '⚙️ Ajustes Descargas') {
+            const settingsSnap = await get(ref(db, 'settings/downloads_free'));
+            const isFree = settingsSnap.val() || false;
+            const newState = !isFree; // Invierte el valor actual
+            
+            await update(ref(db), { 'settings/downloads_free': newState });
+            
+            return bot.sendMessage(chatId, `✅ *AJUSTES DE DESCARGA*\n\nLas descargas para los usuarios están configuradas ahora como: **${newState ? 'GRATUITAS 🟢' : 'DE PAGA 🔴'}**`, { parse_mode: 'Markdown' });
+        }
         
         if (text === '🔄 Revisar Reembolsos') {
             userStates[chatId] = { step: 'WAITING_FOR_REFUND_KEY', data: {} };
@@ -490,7 +608,6 @@ bot.on('callback_query', async (query) => {
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
 
-    // --- EJECUTAR REEMBOLSO (Admin aprueba solicitud del usuario o la suya propia) ---
     if (data.startsWith('rfnd_') && tgId === ADMIN_ID) {
         const parts = data.split('_');
         const targetUid = parts[1];
@@ -537,7 +654,6 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // --- NUEVO: RECHAZAR SOLICITUD DE REEMBOLSO DEL USUARIO (Admin) ---
     if (data.startsWith('reject_refund_') && tgId === ADMIN_ID) {
         const targetTgId = data.split('_')[2];
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
@@ -547,7 +663,6 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // CANCELAR REEMBOLSO LOCAL (Cuando el Admin cancela su propia búsqueda)
     if (data === 'cancel_refund' && tgId === ADMIN_ID) {
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
         return bot.sendMessage(chatId, '❌ Reembolso cancelado exitosamente.');
@@ -600,14 +715,12 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // ADMIN: SELECCIÓN DE PRODUCTO PARA AÑADIR STOCK
     if (data.startsWith('stock_') && tgId === ADMIN_ID) {
         const prodId = data.split('_')[1];
         userStates[chatId] = { step: 'ADD_STOCK_KEYS', data: { prodId: prodId } };
         return bot.sendMessage(chatId, 'Pega todas las **Keys** ahora. Puedes separarlas por espacios, comas o saltos de línea:', { parse_mode: 'Markdown' });
     }
 
-    // USUARIOS: COMPRA DE PRODUCTOS
     if (data.startsWith('buy_')) {
         const productId = data.split('_')[1];
         bot.sendMessage(chatId, '⚙️ Procesando transacción...');
