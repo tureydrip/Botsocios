@@ -8,7 +8,6 @@ const bot = new TelegramBot(token, { polling: true });
 const ADMIN_ID = 7710633235; 
 
 // ⚠️ IMPORTANTE: Pon la URL pública de tu servidor Flask aquí (sin el / al final)
-// Si usas variables de entorno en Railway, puedes usar process.env.PYTHON_API_URL
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'PON_AQUI_LA_URL_PUBLICA_DE_TU_FLASK';
 
 const firebaseConfig = {
@@ -94,28 +93,59 @@ bot.on('message', async (msg) => {
         return bot.sendMessage(chatId, '✅ Acción cancelada. ¿Qué deseas hacer ahora?', adminKeyboard);
     }
 
-    if (msg.photo && userStates[chatId] && userStates[chatId].step === 'WAITING_FOR_RECEIPT') {
-        const stateData = userStates[chatId].data; 
-        const username = stateData.username;
-        const amount = stateData.amount;
-        const targetWebUid = stateData.webUid;
+    // MANEJO DE FOTOS (Recargas y Reembolsos)
+    if (msg.photo && userStates[chatId]) {
+        const state = userStates[chatId];
         const fileId = msg.photo[msg.photo.length - 1].file_id; 
-        
-        const adminConfirmKeyboard = {
-            inline_keyboard: [
-                [{ text: '✅ Confirmar', callback_data: `ok_rech_${targetWebUid}_${amount}_${tgId}` }],
-                [{ text: '❌ Rechazar', callback_data: `no_rech_${tgId}` }]
-            ]
-        };
 
-        bot.sendPhoto(ADMIN_ID, fileId, {
-            caption: `💳 *NUEVO COMPROBANTE DE PAGO*\n\n👤 Usuario: ${username}\n🆔 ID Telegram: \`${tgId}\`\n💰 Monto Solicitado: *$${amount} USD*`,
-            parse_mode: 'Markdown',
-            reply_markup: adminConfirmKeyboard 
-        });
-        
-        userStates[chatId] = null; 
-        return bot.sendMessage(chatId, '✅ Comprobante enviado exitosamente al administrador. Por favor espera a que se valide y acredite tu saldo.', keyboard);
+        if (state.step === 'WAITING_FOR_RECEIPT') {
+            const stateData = state.data; 
+            const username = stateData.username;
+            const amount = stateData.amount;
+            const targetWebUid = stateData.webUid;
+            
+            const adminConfirmKeyboard = {
+                inline_keyboard: [
+                    [{ text: '✅ Confirmar', callback_data: `ok_rech_${targetWebUid}_${amount}_${tgId}` }],
+                    [{ text: '❌ Rechazar', callback_data: `no_rech_${tgId}` }]
+                ]
+            };
+
+            bot.sendPhoto(ADMIN_ID, fileId, {
+                caption: `💳 *NUEVO COMPROBANTE DE PAGO*\n\n👤 Usuario: ${username}\n🆔 ID Telegram: \`${tgId}\`\n💰 Monto Solicitado: *$${amount} USD*`,
+                parse_mode: 'Markdown',
+                reply_markup: adminConfirmKeyboard 
+            });
+            
+            userStates[chatId] = null; 
+            return bot.sendMessage(chatId, '✅ Comprobante enviado exitosamente al administrador. Por favor espera a que se valide y acredite tu saldo.', keyboard);
+        }
+
+        if (state.step === 'WAITING_FOR_USER_REFUND_PROOF') {
+            const foundData = state.data;
+            const reason = msg.caption ? msg.caption : 'Sin razón especificada';
+            const dateStr = new Date(foundData.compra.date).toLocaleString('es-CO');
+
+            const msgInfo = `🔔 *NUEVA SOLICITUD DE REEMBOLSO (CON PRUEBA)*\n\n` +
+                        `👤 *Usuario:* ${foundData.username}\n` +
+                        `📦 *Producto:* ${foundData.compra.product}\n` +
+                        `🔑 *Key:* \`${foundData.compra.key}\`\n` +
+                        `💰 *Pagado:* $${parseFloat(foundData.compra.price).toFixed(2)} USD\n` +
+                        `📅 *Fecha:* ${dateStr}\n` +
+                        `📝 *Motivo del usuario:* ${reason}\n\n` +
+                        `¿Deseas aprobar la solicitud y devolver el dinero?`;
+
+            const refundKeyboard = {
+                inline_keyboard: [
+                    [{ text: '✅ Mandar Reembolso', callback_data: `rfnd_${foundData.uid}_${foundData.histId}` }],
+                    [{ text: '❌ Rechazar Solicitud', callback_data: `reject_refund_${foundData.targetTgId}` }]
+                ]
+            };
+            
+            bot.sendPhoto(ADMIN_ID, fileId, { caption: msgInfo, parse_mode: 'Markdown', reply_markup: refundKeyboard });
+            userStates[chatId] = null;
+            return bot.sendMessage(chatId, '✅ Tu solicitud y captura han sido enviadas al administrador exitosamente. Recibirás una notificación pronto.', keyboard);
+        }
     }
 
     if (!msg.text) return; 
@@ -123,7 +153,22 @@ bot.on('message', async (msg) => {
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
-        // --- FLUJO CORREGIDO PARA DESCARGAS ---
+        // PROTECCIÓN ANTI-BUG: Si se espera foto pero el usuario manda solo texto
+        if (state.step === 'WAITING_FOR_RECEIPT' || state.step === 'WAITING_FOR_USER_REFUND_PROOF') {
+            return bot.sendMessage(chatId, '❌ Debes adjuntar una **foto (captura de pantalla)** para continuar.\n\n_(Si deseas salir, usa el menú o escribe "❌ Cancelar Acción")_', { parse_mode: 'Markdown' });
+        }
+
+        if (state.step === 'WAITING_FOR_REJECT_REASON' && tgId === ADMIN_ID) {
+            const targetTgId = state.data.targetTgId;
+            const reason = text.trim();
+
+            bot.sendMessage(chatId, '✅ La razón del rechazo ha sido enviada al usuario.', adminKeyboard);
+            bot.sendMessage(targetTgId, `❌ *SOLICITUD DE REEMBOLSO RECHAZADA*\n\nTu solicitud no ha sido aprobada por la siguiente razón:\n\n📝 _"${reason}"_\n\nContacta a soporte si crees que es un error.`, { parse_mode: 'Markdown' });
+            
+            userStates[chatId] = null;
+            return;
+        }
+
         if (state.step === 'WAITING_FOR_VIDEO_URL') {
             const url = text.trim();
             const isTikTok = url.includes('tiktok.com') || url.includes('vm.tiktok.com');
@@ -155,7 +200,6 @@ bot.on('message', async (msg) => {
                 const params = new URLSearchParams();
                 params.append('url', url);
 
-                // 1. Obtener información previa
                 const previewRes = await fetch(`${PYTHON_API_URL}/preview`, { method: 'POST', body: params });
                 if (!previewRes.ok) throw new Error(`Error HTTP de Python: ${previewRes.status}`);
                 
@@ -179,7 +223,6 @@ bot.on('message', async (msg) => {
 
                 bot.sendMessage(chatId, '📥 Descargando archivo desde el servidor, esto tomará unos segundos...');
 
-                // 2. Solicitar la descarga
                 params.append('kind', 'video');
                 const downloadRes = await fetch(`${PYTHON_API_URL}/download`, { method: 'POST', body: params });
 
@@ -188,7 +231,6 @@ bot.on('message', async (msg) => {
                 const arrayBuffer = await downloadRes.arrayBuffer();
                 const buffer = Buffer.from(arrayBuffer);
 
-                // 3. Enviar a Telegram con Opciones de Archivo (VITAL PARA RAILWAY)
                 const fileName = isTikTok ? 'tiktok_video.mp4' : 'youtube_video.mp4';
                 
                 await bot.sendVideo(chatId, buffer, { 
@@ -202,7 +244,6 @@ bot.on('message', async (msg) => {
                 userStates[chatId] = null;
 
             } catch (error) {
-                // Imprimir el error exacto en los logs de Railway para que puedas debugear
                 console.error("🔴 ERROR EN DESCARGA:", error.message || error);
                 
                 let costToRefund = 0;
@@ -251,31 +292,15 @@ bot.on('message', async (msg) => {
             if (found) {
                 if (foundData.compra.refunded) {
                     bot.sendMessage(chatId, '⚠️ *Esta Key ya fue reembolsada anteriormente.*', { parse_mode: 'Markdown' });
+                    userStates[chatId] = null;
                 } else {
-                    const dateStr = new Date(foundData.compra.date).toLocaleString('es-CO');
-                    
-                    const msgInfo = `🔔 *NUEVA SOLICITUD DE REEMBOLSO (USUARIO)*\n\n` +
-                                `👤 *Usuario:* ${foundData.username}\n` +
-                                `📦 *Producto:* ${foundData.compra.product}\n` +
-                                `🔑 *Key:* \`${foundData.compra.key}\`\n` +
-                                `💰 *Costo pagado:* $${parseFloat(foundData.compra.price).toFixed(2)} USD\n` +
-                                `📅 *Fecha:* ${dateStr}\n\n` +
-                                `¿Deseas aprobar la solicitud y devolver el dinero?`;
-
-                    const refundKeyboard = {
-                        inline_keyboard: [
-                            [{ text: '✅ Mandar Reembolso', callback_data: `rfnd_${foundData.uid}_${foundData.histId}` }],
-                            [{ text: '❌ Rechazar Solicitud', callback_data: `reject_refund_${foundData.targetTgId}` }]
-                        ]
-                    };
-                    
-                    bot.sendMessage(ADMIN_ID, msgInfo, { parse_mode: 'Markdown', reply_markup: refundKeyboard });
-                    bot.sendMessage(chatId, '✅ Tu solicitud de reembolso ha sido enviada al administrador exitosamente. Recibirás una notificación cuando sea revisada.', keyboard);
+                    userStates[chatId] = { step: 'WAITING_FOR_USER_REFUND_PROOF', data: foundData };
+                    bot.sendMessage(chatId, '✅ *Key encontrada.*\n\nAhora, por favor **envía una captura de pantalla** mostrando el error del producto.\n\n✍️ *IMPORTANTE:* Escribe la razón por la que solicitas el reembolso en la misma descripción/comentario de la foto.', { parse_mode: 'Markdown' });
                 }
             } else {
                 bot.sendMessage(chatId, '❌ No se encontró esta Key en tu historial de compras. Verifica que la hayas escrito correctamente e intenta de nuevo.', keyboard);
+                userStates[chatId] = null;
             }
-            userStates[chatId] = null;
             return;
         }
 
@@ -639,8 +664,9 @@ bot.on('callback_query', async (query) => {
         const targetTgId = data.split('_')[2];
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
         
-        bot.sendMessage(chatId, '❌ Solicitud de reembolso rechazada.');
-        bot.sendMessage(targetTgId, '❌ *SOLICITUD RECHAZADA*\n\nTu solicitud de reembolso para esa Key no fue aprobada por el administrador. Contacta a soporte si crees que es un error.', { parse_mode: 'Markdown' });
+        // Pide la razón del rechazo al admin
+        userStates[chatId] = { step: 'WAITING_FOR_REJECT_REASON', data: { targetTgId: targetTgId } };
+        bot.sendMessage(chatId, '✍️ *Por favor, escribe el motivo* por el cual se rechaza este reembolso (este mensaje se le enviará al usuario):', { parse_mode: 'Markdown' });
         return;
     }
 
