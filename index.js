@@ -41,9 +41,9 @@ const adminKeyboard = {
         keyboard: [
             [{ text: '📦 Crear Producto' }, { text: '📝 Editar Producto' }, { text: '🗑️ Eliminar Producto' }],
             [{ text: '🔑 Añadir Stock' }, { text: '💰 Añadir Saldo' }, { text: '📢 Mensaje Global' }],
-            [{ text: '🔄 Revisar Reembolsos' }, { text: '⚙️ Ajustes Descargas' }, { text: '📊 Estadísticas' }], 
-            [{ text: '🎟️ Crear Cupón' }, { text: '🔨 Gest. Usuarios' }, { text: '🛠️ Mantenimiento' }],
-            [{ text: '🎥 Descargar Video' }, { text: '❌ Cancelar Acción' }]
+            [{ text: '🔄 Revisar Reembolsos' }, { text: '🎟️ Crear Cupón' }, { text: '📊 Estadísticas' }], 
+            [{ text: '📋 Usuarios con Saldo' }, { text: '🔨 Gest. Usuarios' }, { text: '🛠️ Mantenimiento' }],
+            [{ text: '⚙️ Ajustes Descargas' }, { text: '🎥 Descargar Video' }, { text: '❌ Cancelar Acción' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -192,18 +192,26 @@ bot.on('message', async (msg) => {
                 return bot.sendMessage(chatId, '⚠️ *YA USASTE ESTE CUPÓN*\n\nSolo se puede canjear una vez por cuenta.', { parse_mode: 'Markdown', ...keyboard });
             }
 
-            // Canjear
-            const currentBal = parseFloat(webUser.balance || 0);
-            const reward = parseFloat(couponData.amount);
-            const nuevoSaldo = currentBal + reward;
-
             const updates = {};
-            updates[`users/${webUid}/balance`] = nuevoSaldo;
             updates[`users/${webUid}/used_coupons/${code}`] = true;
 
-            await update(ref(db), updates);
-            userStates[chatId] = null;
-            return bot.sendMessage(chatId, `🎉 *¡CUPÓN CANJEADO CON ÉXITO!*\n\nSe han añadido *$${reward} USD* a tu saldo.\n💰 *Nuevo saldo:* $${nuevoSaldo.toFixed(2)} USD`, { parse_mode: 'Markdown', ...keyboard });
+            if (couponData.type === 'balance') {
+                const currentBal = parseFloat(webUser.balance || 0);
+                const reward = parseFloat(couponData.value);
+                const nuevoSaldo = currentBal + reward;
+                updates[`users/${webUid}/balance`] = nuevoSaldo;
+                
+                await update(ref(db), updates);
+                userStates[chatId] = null;
+                return bot.sendMessage(chatId, `🎉 *¡CUPÓN CANJEADO CON ÉXITO!*\n\nSe han añadido *$${reward} USD* a tu saldo.\n💰 *Nuevo saldo:* $${nuevoSaldo.toFixed(2)} USD`, { parse_mode: 'Markdown', ...keyboard });
+            } else if (couponData.type === 'discount') {
+                const discount = parseFloat(couponData.value);
+                updates[`users/${webUid}/active_discount`] = discount;
+                
+                await update(ref(db), updates);
+                userStates[chatId] = null;
+                return bot.sendMessage(chatId, `🎟️ *¡CUPÓN DE DESCUENTO APLICADO!*\n\nHas activado un descuento del **${discount}%**.\n🛍️ Se aplicará automáticamente en tu **próxima compra** de cualquier producto en la tienda.`, { parse_mode: 'Markdown', ...keyboard });
+            }
         }
 
         if (state.step === 'MANAGE_USER' && tgId === ADMIN_ID) {
@@ -248,16 +256,24 @@ bot.on('message', async (msg) => {
 
         if (state.step === 'CREATE_COUPON_CODE' && tgId === ADMIN_ID) {
             state.data.code = text.trim().toUpperCase();
-            state.step = 'CREATE_COUPON_AMOUNT';
-            return bot.sendMessage(chatId, '💵 Escribe la cantidad en USD que dará este cupón (ej: 1.5):');
+            state.step = 'CREATE_COUPON_TYPE';
+            const inlineType = {
+                inline_keyboard: [
+                    [{ text: '💰 Dar Saldo (USD)', callback_data: `cpntype_bal` }],
+                    [{ text: '📉 Dar Descuento (%)', callback_data: `cpntype_desc` }]
+                ]
+            };
+            return bot.sendMessage(chatId, `Código: *${state.data.code}*\n\n¿Qué tipo de beneficio dará este cupón?`, { parse_mode: 'Markdown', reply_markup: inlineType });
         }
 
-        if (state.step === 'CREATE_COUPON_AMOUNT' && tgId === ADMIN_ID) {
-            const amount = parseFloat(text);
-            if (isNaN(amount) || amount <= 0) return bot.sendMessage(chatId, '❌ Cantidad inválida.');
+        if (state.step === 'CREATE_COUPON_VALUE' && tgId === ADMIN_ID) {
+            const val = parseFloat(text);
+            if (isNaN(val) || val <= 0) return bot.sendMessage(chatId, '❌ Valor inválido. Ingresa un número mayor a 0.');
             
-            await set(ref(db, `coupons/${state.data.code}`), { amount: amount });
-            bot.sendMessage(chatId, `✅ *Cupón creado.*\n\nCódigo: \`${state.data.code}\`\nRecompensa: $${amount} USD`, { parse_mode: 'Markdown', ...adminKeyboard });
+            await set(ref(db, `coupons/${state.data.code}`), { type: state.data.type, value: val });
+            
+            const isDesc = state.data.type === 'discount';
+            bot.sendMessage(chatId, `✅ *Cupón creado.*\n\nCódigo: \`${state.data.code}\`\nBeneficio: ${isDesc ? val + '% de Descuento (1 sola compra)' : '$' + val + ' USD de saldo'}`, { parse_mode: 'Markdown', ...adminKeyboard });
             userStates[chatId] = null;
             return;
         }
@@ -276,7 +292,7 @@ bot.on('message', async (msg) => {
         // EDICIÓN DE PRODUCTOS
         if (state.step.startsWith('EDIT_PROD_') && tgId === ADMIN_ID) {
             const prodId = state.data.prodId;
-            const fieldType = state.step.split('_')[2]; // NAME, PRICE, WARR
+            const fieldType = state.step.split('_')[2]; 
             
             let updates = {};
             if (fieldType === 'NAME') {
@@ -415,7 +431,6 @@ bot.on('message', async (msg) => {
                     bot.sendMessage(chatId, '⚠️ *Esta Key ya fue reembolsada anteriormente.*', { parse_mode: 'Markdown' });
                     userStates[chatId] = null;
                 } else {
-                    // VERIFICACIÓN DE GARANTÍA
                     const warrantyHours = foundData.compra.warrantyHours || 0; 
                     const hoursPassed = (Date.now() - foundData.compra.date) / (1000 * 60 * 60);
                     
@@ -662,7 +677,11 @@ bot.on('message', async (msg) => {
     }
 
     if (text === '👤 Mi Perfil') {
-        return bot.sendMessage(chatId, `👤 *PERFIL LUCK XIT*\n\nUsuario: ${webUser.username}\n💰 Saldo: *$${parseFloat(webUser.balance).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
+        let msgPerfil = `👤 *PERFIL LUCK XIT*\n\nUsuario: ${webUser.username}\n💰 Saldo: *$${parseFloat(webUser.balance).toFixed(2)} USD*`;
+        if (webUser.active_discount && webUser.active_discount > 0) {
+            msgPerfil += `\n\n🎟️ *Descuento Activo:* Tienes un ${webUser.active_discount}% de descuento para tu próxima compra en la tienda.`;
+        }
+        return bot.sendMessage(chatId, msgPerfil, { parse_mode: 'Markdown' });
     }
 
     if (text === '💳 Recargas') {
@@ -692,38 +711,107 @@ bot.on('message', async (msg) => {
         const productsSnap = await get(ref(db, 'products'));
         if (!productsSnap.exists()) return bot.sendMessage(chatId, 'Tienda vacía en este momento.');
         
+        const activeDiscount = parseFloat(webUser.active_discount || 0);
+        let header = `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto:`;
+        if (activeDiscount > 0) {
+            header = `🛒 *ARSENAL DISPONIBLE*\n🎟️ Tienes un **${activeDiscount}% de descuento** que se aplicará automáticamente a tu compra.\n\nSelecciona un producto:`;
+        }
+
         let inlineKeyboard = [];
         productsSnap.forEach(child => {
             const p = child.val();
             const stock = p.keys ? Object.keys(p.keys).length : 0;
             if (stock > 0) {
-                inlineKeyboard.push([{ text: `Comprar ${p.name} - $${p.price} (${stock} disp)`, callback_data: `buy_${child.key}` }]);
+                let showPrice = p.price;
+                if (activeDiscount > 0) {
+                    showPrice = p.price - (p.price * (activeDiscount / 100));
+                }
+                inlineKeyboard.push([{ text: `Comprar ${p.name} - $${showPrice.toFixed(2)} (${stock} disp)`, callback_data: `buy_${child.key}` }]);
             }
         });
         if(inlineKeyboard.length === 0) return bot.sendMessage(chatId, '❌ Todos los productos están agotados.');
         
-        return bot.sendMessage(chatId, `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+        return bot.sendMessage(chatId, header, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
     }
 
     if (tgId === ADMIN_ID) {
+
+        if (text === '📋 Usuarios con Saldo') {
+            bot.sendMessage(chatId, '⏳ Generando reporte de usuarios...');
+            const usersSnap = await get(ref(db, 'users'));
+            
+            let list = `📋 *REPORTE: USUARIOS CON SALDO*\n\n`;
+            let count = 0;
+            
+            if (usersSnap.exists()) {
+                usersSnap.forEach(u => {
+                    const ud = u.val();
+                    const saldo = parseFloat(ud.balance || 0);
+                    
+                    if (saldo > 0) {
+                        count++;
+                        let gastos = 0;
+                        let compras = 0;
+                        if (ud.history) {
+                            Object.values(ud.history).forEach(h => {
+                                gastos += parseFloat(h.price || 0);
+                                compras++;
+                            });
+                        }
+                        list += `👤 *${ud.username}*\n💰 Saldo: $${saldo.toFixed(2)}\n💸 Gastos: $${gastos.toFixed(2)} | 🛍️ Keys: ${compras}\n➖\n`;
+                    }
+                });
+            }
+            
+            if (count === 0) return bot.sendMessage(chatId, 'No hay ningún usuario con saldo en la base de datos en este momento.');
+            
+            // Dividir el mensaje si es muy largo (Telegram tiene límite de 4096 caracteres)
+            if (list.length > 4000) {
+                const chunks = list.match(/[\s\S]{1,3900}/g) || [];
+                for (let chunk of chunks) {
+                    await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+                }
+            } else {
+                bot.sendMessage(chatId, list, { parse_mode: 'Markdown' });
+            }
+            return;
+        }
         
         if (text === '📊 Estadísticas') {
             bot.sendMessage(chatId, '⏳ Recopilando datos del servidor...');
+            
+            // Calcular inicio de hoy en hora Colombia (GMT-5)
+            const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Bogota', year: 'numeric', month: 'numeric', day: 'numeric' });
+            const [month, day, year] = formatter.format(new Date()).split('/');
+            const startOfDayTs = new Date(`${year}-${month}-${day}T00:00:00-05:00`).getTime();
+
             const usersSnap = await get(ref(db, 'users'));
             const productsSnap = await get(ref(db, 'products'));
             
-            let totalUsers = 0; let totalRecharges = 0;
-            let totalSalesUsd = 0; let totalSalesCount = 0;
+            let totalUsers = 0; 
+            let allTimeRecharges = 0; let allTimeSalesUsd = 0; let allTimeSalesCount = 0;
+            let todayRecharges = 0; let todaySalesUsd = 0; let todaySalesCount = 0;
             
             if (usersSnap.exists()) {
                 usersSnap.forEach(u => {
                     totalUsers++;
                     const ud = u.val();
-                    if (ud.recharges) Object.values(ud.recharges).forEach(r => totalRecharges += parseFloat(r.amount||0));
+                    if (ud.recharges) {
+                        Object.values(ud.recharges).forEach(r => {
+                            const amt = parseFloat(r.amount||0);
+                            allTimeRecharges += amt;
+                            if (r.date >= startOfDayTs) todayRecharges += amt;
+                        });
+                    }
                     if (ud.history) {
                         Object.values(ud.history).forEach(h => {
-                            totalSalesCount++;
-                            totalSalesUsd += parseFloat(h.price||0);
+                            const price = parseFloat(h.price||0);
+                            allTimeSalesCount++;
+                            allTimeSalesUsd += price;
+                            if (h.date >= startOfDayTs) {
+                                todaySalesCount++;
+                                todaySalesUsd += price;
+                            }
                         });
                     }
                 });
@@ -738,18 +826,22 @@ bot.on('message', async (msg) => {
             }
             
             const msgStats = `📊 *DASHBOARD LUCK XIT*\n\n` +
-            `👥 *Usuarios Totales:* ${totalUsers}\n` +
-            `💵 *Dinero Recargado:* $${totalRecharges.toFixed(2)} USD\n` +
-            `🛍️ *Ventas Totales:* ${totalSalesCount} ($${totalSalesUsd.toFixed(2)} USD)\n\n` +
-            `📦 *Productos Activos:* ${activeProducts}\n` +
-            `🔑 *Keys en Stock:* ${totalKeys}`;
+            `📅 *ESTADÍSTICAS DE HOY*\n` +
+            `💵 Recargado Hoy: *$${todayRecharges.toFixed(2)} USD*\n` +
+            `🛍️ Ventas Hoy: *${todaySalesCount}* ($${todaySalesUsd.toFixed(2)} USD)\n\n` +
+            `🌍 *ESTADÍSTICAS GLOBALES (Siempre)*\n` +
+            `👥 Usuarios Totales: ${totalUsers}\n` +
+            `💵 Dinero Recargado: $${allTimeRecharges.toFixed(2)} USD\n` +
+            `🛍️ Ventas Totales: ${allTimeSalesCount} ($${allTimeSalesUsd.toFixed(2)} USD)\n\n` +
+            `📦 *INVENTARIO*\n` +
+            `Activos: ${activeProducts} Prod. | Stock: ${totalKeys} Keys`;
             
             return bot.sendMessage(chatId, msgStats, {parse_mode: 'Markdown'});
         }
 
         if (text === '🎟️ Crear Cupón') {
             userStates[chatId] = { step: 'CREATE_COUPON_CODE', data: {} };
-            return bot.sendMessage(chatId, '🎟️ *CREADOR DE CUPONES*\n\nEscribe la palabra o código promocional que los usuarios van a canjear (ej: LUCKXIT2026):', { parse_mode: 'Markdown' });
+            return bot.sendMessage(chatId, '🎟️ *CREADOR DE CUPONES*\n\nEscribe la palabra o código promocional que los usuarios van a canjear (ej: Ofertazo20):', { parse_mode: 'Markdown' });
         }
 
         if (text === '🔨 Gest. Usuarios') {
@@ -840,15 +932,22 @@ bot.on('callback_query', async (query) => {
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
 
-    // --- PROTECCIÓN PARA BOTONES INLINE (BANEADOS Y MANTENIMIENTO) ---
     if (tgId !== ADMIN_ID) {
         const settingsSnap = await get(ref(db, 'settings'));
         const isMaintenance = settingsSnap.val()?.maintenance || false;
         const userSnap = await get(ref(db, `users/${webUid}`));
-        
-        if (userSnap.val()?.banned || isMaintenance) return; // Se ignora silenciosamente si hacen clic estando baneados/en mantenimiento
+        if (userSnap.val()?.banned || isMaintenance) return;
     }
-    // ------------------------------------------------------------------
+
+    // --- MANEJO DE TIPOS DE CUPONES ---
+    if (data.startsWith('cpntype_') && tgId === ADMIN_ID) {
+        const type = data.split('_')[1] === 'bal' ? 'balance' : 'discount';
+        userStates[chatId].data.type = type;
+        userStates[chatId].step = 'CREATE_COUPON_VALUE';
+        bot.editMessageText(type === 'balance' ? '💵 Escribe la cantidad en **USD** que dará este cupón (ej: 1.5):' : '📉 Escribe el **porcentaje de descuento** que dará este cupón (ej: 15 para un 15%):', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+        return;
+    }
+    // ----------------------------------
 
     if (data.startsWith('toggleban_') && tgId === ADMIN_ID) {
         const targetUid = data.split('_')[1];
@@ -881,7 +980,7 @@ bot.on('callback_query', async (query) => {
 
     if (data.startsWith('editp_') && tgId === ADMIN_ID) {
         const parts = data.split('_');
-        const field = parts[1]; // name, price, warr
+        const field = parts[1]; 
         const prodId = parts[2];
         
         userStates[chatId] = { step: `EDIT_PROD_${field.toUpperCase()}`, data: { prodId: prodId } };
@@ -1016,36 +1115,51 @@ bot.on('callback_query', async (query) => {
         const prodSnap = await get(ref(db, `products/${productId}`));
         
         let currentBalance = parseFloat(userSnap.val().balance || 0);
+        let activeDiscount = parseFloat(userSnap.val().active_discount || 0);
         let product = prodSnap.val();
 
-        if (currentBalance < product.price) return bot.sendMessage(chatId, '❌ Saldo insuficiente en la Web.');
+        // Calcular precio final si hay descuento
+        let finalPrice = product.price;
+        if (activeDiscount > 0) {
+            finalPrice = product.price - (product.price * (activeDiscount / 100));
+        }
+
+        if (currentBalance < finalPrice) return bot.sendMessage(chatId, '❌ Saldo insuficiente para esta compra.');
         
         if (product.keys && Object.keys(product.keys).length > 0) {
             const firstKeyId = Object.keys(product.keys)[0];
             const keyToDeliver = product.keys[firstKeyId];
             const warrantyHours = product.warranty || 0; 
-
-            // CÁLCULO DE STOCK RESTANTE PARA ALERTA AL ADMIN
             const keysRestantes = Object.keys(product.keys).length - 1; 
 
             const updates = {};
             updates[`products/${productId}/keys/${firstKeyId}`] = null; 
-            updates[`users/${webUid}/balance`] = currentBalance - product.price; 
+            updates[`users/${webUid}/balance`] = currentBalance - finalPrice; 
+            
+            // Si usó descuento, eliminarlo de la cuenta para que solo sirva 1 vez
+            if (activeDiscount > 0) {
+                updates[`users/${webUid}/active_discount`] = null;
+            }
             
             const historyRef = push(ref(db, `users/${webUid}/history`));
             updates[`users/${webUid}/history/${historyRef.key}`] = { 
                 product: product.name, 
                 key: keyToDeliver, 
-                price: product.price, 
+                price: finalPrice, // Guardar el precio que realmente pagó
                 date: Date.now(), 
                 refunded: false,
                 warrantyHours: warrantyHours 
             }; 
 
             await update(ref(db), updates);
-            bot.sendMessage(chatId, `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``, { parse_mode: 'Markdown' });
+            
+            let exitoMsg = `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``;
+            if (activeDiscount > 0) {
+                exitoMsg += `\n\n🎟️ _Se aplicó tu descuento del ${activeDiscount}% a esta compra. Pagaste $${finalPrice.toFixed(2)} USD._`;
+            }
+            
+            bot.sendMessage(chatId, exitoMsg, { parse_mode: 'Markdown' });
 
-            // ENVIAR ALERTA DE STOCK AL ADMIN SI QUEDAN 3 O MENOS
             if (keysRestantes <= 3) {
                 bot.sendMessage(ADMIN_ID, `⚠️ *ALERTA DE STOCK BAJO*\n\nAl producto *${product.name}* le quedan solo **${keysRestantes}** keys disponibles.`, { parse_mode: 'Markdown' });
             }
