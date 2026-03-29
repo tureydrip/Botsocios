@@ -94,7 +94,10 @@ function buildAdminKeyboard(adminData) {
     if (row.length > 0) kb.push(row);
     
     let bottomRow = [];
-    if (adminData.isSuper) bottomRow.push({ text: '👮 Gest. Admins' });
+    if (adminData.isSuper) {
+        bottomRow.push({ text: '👮 Gest. Admins' });
+        bottomRow.push({ text: '🌍 Gest. Países' }); // <-- NUEVO BOTÓN AGREGADO AQUÍ
+    }
     bottomRow.push({ text: '❌ Cancelar Acción' });
     kb.push(bottomRow);
     
@@ -732,7 +735,7 @@ bot.on('message', async (msg) => {
         }
 
         if (state.step === 'WAITING_FOR_RECHARGE_AMOUNT') {
-            return sistemaRecargas.procesarMonto(bot, chatId, text, state.data.minUsd, userStates);
+            return sistemaRecargas.procesarMonto(bot, chatId, text, state.data, userStates);
         }
     } 
 
@@ -760,7 +763,7 @@ bot.on('message', async (msg) => {
     }
 
     if (text === '💳 Recargas') {
-        return sistemaRecargas.iniciarRecarga(bot, chatId, webUser, userStates);
+        return sistemaRecargas.iniciarRecarga(bot, db, chatId, webUser, userStates);
     }
 
     if (text === '🛒 Tienda') {
@@ -791,6 +794,12 @@ bot.on('message', async (msg) => {
     }
 
     if (adminData) {
+
+        // --- NUEVO COMANDO PARA GESTIONAR PAISES ---
+        if (text === '🌍 Gest. Países' && adminData.isSuper) {
+            return sistemaRecargas.menuPaisesAdmin(bot, db, chatId);
+        }
+        // -------------------------------------------
         
         if (text === '👮 Gest. Admins' && adminData.isSuper) {
             userStates[chatId] = { step: 'WAITING_FOR_ADMIN_ID', data: {} };
@@ -987,6 +996,14 @@ bot.on('callback_query', async (query) => {
     }
 
     if (adminData) {
+
+        // --- NUEVA FUNCIÓN: EL ADMIN APAGA/PRENDE PAÍSES DESDE EL MENÚ INLINE ---
+        if (data.startsWith('toggle_pais|') && adminData.isSuper) {
+            const countryCode = data.split('|')[1];
+            return sistemaRecargas.togglePaisAdmin(bot, db, chatId, query.message.message_id, countryCode);
+        }
+        // --------------------------------------------------------------------------
+
         if (data.startsWith('viewu|') && (adminData.isSuper || adminData.perms.stats)) {
             const filter = data.split('|')[1];
             bot.editMessageText('⏳ Generando lista, por favor espera...', { chat_id: chatId, message_id: query.message.message_id });
@@ -1195,6 +1212,16 @@ bot.on('callback_query', async (query) => {
             return bot.sendMessage(chatId, 'Pega todas las **Keys** ahora. Puedes separarlas por espacios, comas o saltos de línea:', { parse_mode: 'Markdown' });
         }
     }
+
+    // --- NUEVA FUNCIÓN: EL USUARIO SELECCIONA SU PAÍS DE RECARGA ---
+    if (data.startsWith('sel_pais|')) {
+        const countryCode = data.split('|')[1];
+        if (userStates[chatId] && userStates[chatId].data) {
+            return sistemaRecargas.seleccionarPais(bot, chatId, countryCode, userStates[chatId].data, userStates);
+        }
+        return bot.sendMessage(chatId, '❌ Tu sesión de recarga ha expirado. Por favor, solicítala de nuevo.');
+    }
+    // -----------------------------------------------------------------
 
     if (data.startsWith('send_receipt|')) {
         const amountRequest = parseFloat(data.split('|')[1]);
