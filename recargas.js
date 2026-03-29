@@ -1,4 +1,4 @@
-const { ref, get, update, push, set } = require('firebase/database');
+const { ref, get, update, push, set, remove } = require('firebase/database');
 
 const PaisesConfig = {
     "AR": { flag: "🇦🇷", name: "Argentina", rate: 1500, currency: "ARS", methods: "🔵 *Uala* (🏦 TRANSFERENCIA)\n📋 CVU: `0000184305010007732302` | Alias: `cescorrea1`\n💡 Transferencia UALA." },
@@ -25,58 +25,35 @@ module.exports = {
     iniciarRecarga: async (bot, db, chatId, webUser, userStates) => {
         let totalRecharged = 0;
         if (webUser.recharges) {
-            Object.values(webUser.recharges).forEach(r => {
-                totalRecharged += parseFloat(r.amount || 0);
-            });
+            Object.values(webUser.recharges).forEach(r => { totalRecharged += parseFloat(r.amount || 0); });
         }
         
-        // Mínimo fijo de 3 USD
         const minUsd = 3;
-
         const configSnap = await get(ref(db, 'config/paises_desactivados'));
         const desactivados = configSnap.exists() ? configSnap.val() : {};
 
-        let keyboard = [];
-        let row = [];
-        
+        let keyboard = []; let row = [];
         Object.keys(PaisesConfig).forEach(code => {
             if (!desactivados[code]) {
                 const p = PaisesConfig[code];
                 row.push({ text: `${p.flag} ${p.name}`, callback_data: `sel_pais|${code}` });
-                if (row.length === 2) {
-                    keyboard.push(row);
-                    row = [];
-                }
+                if (row.length === 2) { keyboard.push(row); row = []; }
             }
         });
         if (row.length > 0) keyboard.push(row);
 
-        if (keyboard.length === 0) {
-            return bot.sendMessage(chatId, '❌ En este momento no hay métodos de pago habilitados. Intenta más tarde.');
-        }
+        if (keyboard.length === 0) return bot.sendMessage(chatId, '❌ En este momento no hay métodos de pago habilitados.');
 
         userStates[chatId] = { step: 'WAITING_FOR_COUNTRY', data: { minUsd: minUsd, totalRecharged: totalRecharged } };
-
-        return bot.sendMessage(chatId, `💳 *NUEVA RECARGA*\n\n📈 *Total recargado por ti:* $${totalRecharged.toFixed(2)} USD\n✅ *Tu recarga mínima es de:* *$${minUsd} USD*\n\n🌍 *Por favor, selecciona tu país de pago:*`, { 
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: keyboard }
-        });
+        return bot.sendMessage(chatId, `💳 *NUEVA RECARGA*\n\n📈 *Total recargado por ti:* $${totalRecharged.toFixed(2)} USD\n✅ *Tu recarga mínima es de:* *$${minUsd} USD*\n\n🌍 *Por favor, selecciona tu país de pago:*`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
     },
 
     seleccionarPais: (bot, chatId, countryCode, stateData, userStates) => {
         const pais = PaisesConfig[countryCode];
         if (!pais) return bot.sendMessage(chatId, '❌ País no válido.');
 
-        userStates[chatId] = { 
-            step: 'WAITING_FOR_RECHARGE_AMOUNT', 
-            data: { minUsd: stateData.minUsd, countryCode: countryCode } 
-        };
-
-        const mensaje = `🌍 *País seleccionado:* ${pais.flag} ${pais.name}\n` +
-                        `💵 *Tasa de Cambio:* $1 USD = $${pais.rate.toLocaleString('es-CO')} ${pais.currency}\n\n` +
-                        `👇 *Escribe la cantidad en USD* que deseas recargar:\n` +
-                        `_(Escribe solo el número, por ejemplo: ${stateData.minUsd} o 5.5)_`;
-
+        userStates[chatId] = { step: 'WAITING_FOR_RECHARGE_AMOUNT', data: { minUsd: stateData.minUsd, countryCode: countryCode } };
+        const mensaje = `🌍 *País seleccionado:* ${pais.flag} ${pais.name}\n💵 *Tasa de Cambio:* $1 USD = $${pais.rate.toLocaleString('es-CO')} ${pais.currency}\n\n👇 *Escribe la cantidad en USD* que deseas recargar:\n_(Escribe solo el número, por ejemplo: ${stateData.minUsd} o 5.5)_`;
         return bot.sendMessage(chatId, mensaje, { parse_mode: 'Markdown' });
     },
 
@@ -85,29 +62,16 @@ module.exports = {
         const { minUsd, countryCode } = stateData;
         const pais = PaisesConfig[countryCode];
 
-        if (isNaN(amountUsd)) {
-            return bot.sendMessage(chatId, '❌ Cantidad inválida. Por favor, escribe **solo el número** (ej: 3 o 5.5).', { parse_mode: 'Markdown' });
-        }
-        if (amountUsd < minUsd) {
-            return bot.sendMessage(chatId, `❌ El monto mínimo es de *$${minUsd} USD*. Intenta con una cantidad mayor.`, { parse_mode: 'Markdown' });
-        }
+        if (isNaN(amountUsd)) return bot.sendMessage(chatId, '❌ Cantidad inválida. Por favor, escribe **solo el número**.', { parse_mode: 'Markdown' });
+        if (amountUsd < minUsd) return bot.sendMessage(chatId, `❌ El monto mínimo es de *$${minUsd} USD*.`, { parse_mode: 'Markdown' });
 
         const amountLocal = amountUsd * pais.rate;
-
-        const mensajePago = `✅ *MONTO CALCULADO CON ÉXITO*\n\n` +
-                            `💰 Vas a recargar: *$${amountUsd.toFixed(2)} USD*\n` +
-                            `🌍 *País:* ${pais.flag} ${pais.name}\n` +
-                            `💸 *Monto a pagar:* *$${amountLocal.toLocaleString('es-CO')} ${pais.currency}* (Dólar a ${pais.rate} ${pais.currency})\n\n` +
-                            `💳 *MÉTODOS DE PAGO DISPONIBLES:*\n\n${pais.methods}\n\n` +
-                            `_(Toca cualquier número de cuenta o ID arriba para copiarlo automáticamente)_\n\n` +
-                            `🏦 *PASOS PARA FINALIZAR:*\n` +
-                            `1. Realiza el pago exacto.\n` +
-                            `2. Selecciona por dónde quieres enviar tu comprobante abajo:`;
+        const mensajePago = `✅ *MONTO CALCULADO CON ÉXITO*\n\n💰 Vas a recargar: *$${amountUsd.toFixed(2)} USD*\n🌍 *País:* ${pais.flag} ${pais.name}\n💸 *Monto a pagar:* *$${amountLocal.toLocaleString('es-CO')} ${pais.currency}* (Dólar a ${pais.rate} ${pais.currency})\n\n💳 *MÉTODOS DE PAGO DISPONIBLES:*\n\n${pais.methods}\n\n_(Toca cualquier número de cuenta o ID arriba para copiarlo automáticamente)_\n\n🏦 *PASOS PARA FINALIZAR:*\n1. Realiza el pago exacto.\n2. Selecciona por dónde quieres enviar tu comprobante abajo:`;
 
         const rechargeInline = { 
             inline_keyboard: [
                 [{ text: '💬 Enviar por WhatsApp', url: 'https://wa.me/573142369516' }],
-                [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: `send_receipt|${amountUsd}` }]
+                [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: `send_receipt|${amountUsd}|${countryCode}` }] 
             ] 
         };
 
@@ -125,21 +89,15 @@ module.exports = {
             keyboard.push([{ text: `${status} ${PaisesConfig[code].flag} ${PaisesConfig[code].name}`, callback_data: `toggle_pais|${code}` }]);
         });
 
-        return bot.sendMessage(chatId, '⚙️ *ADMIN: Activar/Desactivar Países*\nToca un país para cambiar su estado (✅ Activo / ❌ Desactivado):', {
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: keyboard }
-        });
+        return bot.sendMessage(chatId, '⚙️ *ADMIN: Activar/Desactivar Países*\nToca un país para cambiar su estado (✅ Activo / ❌ Desactivado):', { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
     },
 
     togglePaisAdmin: async (bot, db, chatId, messageId, countryCode) => {
         const refPais = ref(db, `config/paises_desactivados/${countryCode}`);
         const snap = await get(refPais);
         
-        if (snap.exists() && snap.val() === true) {
-            await set(refPais, null);
-        } else {
-            await set(refPais, true);
-        }
+        if (snap.exists() && snap.val() === true) { await set(refPais, null); } 
+        else { await set(refPais, true); }
 
         const configSnap = await get(ref(db, 'config/paises_desactivados'));
         const desactivados = configSnap.exists() ? configSnap.val() : {};
@@ -153,35 +111,79 @@ module.exports = {
         bot.editMessageReplyMarkup({ inline_keyboard: keyboard }, { chat_id: chatId, message_id: messageId });
     },
 
-    solicitarComprobante: async (bot, db, chatId, webUid, amountRequest, userStates) => {
+    solicitarComprobante: async (bot, db, chatId, webUid, amountRequest, countryCode, userStates) => {
         const userSnap = await get(ref(db, `users/${webUid}`));
         if (!userSnap.exists()) return bot.sendMessage(chatId, '❌ Error: No pudimos cargar tus datos.');
         
+        const pais = PaisesConfig[countryCode];
+        const localAmount = amountRequest * pais.rate;
         const username = userSnap.val().username;
-        userStates[chatId] = { step: 'WAITING_FOR_RECEIPT', data: { username: username, amount: amountRequest, webUid: webUid } };
+
+        userStates[chatId] = { 
+            step: 'WAITING_FOR_RECEIPT', 
+            data: { username: username, amount: amountRequest, webUid: webUid, countryName: pais.name, localAmount: localAmount, currency: pais.currency } 
+        };
+        
         return bot.sendMessage(chatId, '📸 Por favor, envía la **foto de tu comprobante** de pago ahora mismo.\n\n_(Asegúrate de que la captura se vea clara)_', { parse_mode: 'Markdown' });
     },
 
-    recibirFotoComprobante: (bot, chatId, tgId, fileId, stateData, keyboard, superAdminId, userStates) => {
+    recibirFotoComprobante: async (bot, db, chatId, tgId, fileId, stateData, keyboard, superAdminId, userStates) => {
+        const receiptRef = push(ref(db, 'pending_receipts'));
+        const receiptId = receiptRef.key;
+
+        await set(receiptRef, {
+            webUid: stateData.webUid,
+            amount: stateData.amount,
+            tgId: tgId,
+            username: stateData.username
+        });
+
         const adminConfirmKeyboard = {
             inline_keyboard: [
-                [{ text: '✅ Confirmar', callback_data: `ok_rech|${stateData.webUid}|${stateData.amount}|${tgId}` }],
-                [{ text: '❌ Rechazar', callback_data: `no_rech|${tgId}` }]
+                [{ text: '✅ Confirmar', callback_data: `ok_rech|${receiptId}` }],
+                [{ text: '❌ Rechazar', callback_data: `no_rech|${receiptId}` }]
             ]
         };
 
-        bot.sendPhoto(superAdminId, fileId, {
-            caption: `💳 *NUEVO COMPROBANTE DE PAGO*\n\n👤 Usuario: ${stateData.username}\n🆔 ID Telegram: \`${tgId}\`\n💰 Monto Solicitado: *$${stateData.amount} USD*`,
-            parse_mode: 'Markdown',
-            reply_markup: adminConfirmKeyboard 
-        });
+        const captionMsg = `💳 *NUEVO COMPROBANTE DE PAGO*\n\n` +
+                           `👤 Usuario: ${stateData.username}\n` +
+                           `🆔 ID Telegram: \`${tgId}\`\n` +
+                           `💰 Monto Solicitado: *$${stateData.amount} USD*\n` +
+                           `🌍 País de Pago: *${stateData.countryName}*\n` +
+                           `💸 Monto Pagado Local: *$${stateData.localAmount.toLocaleString('es-CO')} ${stateData.currency}*`;
+
+        bot.sendPhoto(superAdminId, fileId, { caption: captionMsg, parse_mode: 'Markdown', reply_markup: adminConfirmKeyboard }).catch(()=>{});
+
+        const adminsSnap = await get(ref(db, 'admins'));
+        if (adminsSnap.exists()) {
+            adminsSnap.forEach(child => {
+                const adminId = child.key;
+                const perms = child.val().perms || {};
+                if (perms.balance && adminId !== superAdminId.toString()) {
+                    bot.sendPhoto(adminId, fileId, { caption: captionMsg, parse_mode: 'Markdown', reply_markup: adminConfirmKeyboard }).catch(()=>{});
+                }
+            });
+        }
         
         userStates[chatId] = null; 
         return bot.sendMessage(chatId, '✅ Comprobante enviado exitosamente a los administradores. Por favor espera a que se valide.', keyboard);
     },
 
-    aprobarRecarga: async (bot, db, chatId, queryMessageId, targetWebUid, amount, targetTgId, adminUsername, tgId, notifySuperAdmin) => {
+    aprobarRecarga: async (bot, db, chatId, queryMessageId, receiptId, adminUsername, adminTgId, notifySuperAdmin) => {
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: queryMessageId });
+        
+        const receiptSnap = await get(ref(db, `pending_receipts/${receiptId}`));
+        if (!receiptSnap.exists()) {
+            return bot.sendMessage(chatId, '⚠️ Este comprobante ya fue procesado (aprobado o rechazado) por otro administrador.');
+        }
+
+        const data = receiptSnap.val();
+        const targetWebUid = data.webUid;
+        const amount = data.amount;
+        const targetTgId = data.tgId;
+
+        await remove(ref(db, `pending_receipts/${receiptId}`));
+
         bot.sendMessage(chatId, '⚙️ Acreditando saldo al usuario...');
 
         const userSnap = await get(ref(db, `users/${targetWebUid}`));
@@ -199,17 +201,26 @@ module.exports = {
             bot.sendMessage(chatId, `✅ Pago aprobado. Se añadieron $${amount} USD a ${userSnap.val().username}.`);
             bot.sendMessage(targetTgId, `🎉 *¡RECARGA APROBADA!*\n\nTu pago ha sido confirmado. Se han añadido *$${amount} USD* a tu cuenta.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
             
-            notifySuperAdmin(adminUsername, tgId, 'Aprobó Recarga', `Acreditó $${amount} USD a la cuenta de ${userSnap.val().username}`);
+            notifySuperAdmin(adminUsername, adminTgId, 'Aprobó Recarga', `Acreditó $${amount} USD a la cuenta de ${userSnap.val().username}`);
         } else {
             bot.sendMessage(chatId, '❌ Hubo un error buscando al usuario en Firebase.');
         }
     },
 
-    rechazarRecarga: (bot, chatId, queryMessageId, targetTgId, adminUsername, tgId, notifySuperAdmin) => {
+    rechazarRecarga: async (bot, db, chatId, queryMessageId, receiptId, adminUsername, adminTgId, notifySuperAdmin) => {
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: queryMessageId });
+
+        const receiptSnap = await get(ref(db, `pending_receipts/${receiptId}`));
+        if (!receiptSnap.exists()) {
+            return bot.sendMessage(chatId, '⚠️ Este comprobante ya fue procesado por otro administrador.');
+        }
+
+        const targetTgId = receiptSnap.val().tgId;
+        await remove(ref(db, `pending_receipts/${receiptId}`));
+
         bot.sendMessage(chatId, '❌ Comprobante rechazado.');
         bot.sendMessage(targetTgId, '❌ *RECARGA RECHAZADA*\n\nTu comprobante no fue válido. Si crees que es un error, por favor contacta al soporte enviando un mensaje directo.', { parse_mode: 'Markdown' });
         
-        notifySuperAdmin(adminUsername, tgId, 'Rechazó Recarga', `Comprobante rechazado para el Telegram ID: ${targetTgId}`);
+        notifySuperAdmin(adminUsername, adminTgId, 'Rechazó Recarga', `Comprobante rechazado para el Telegram ID: ${targetTgId}`);
     }
 };
