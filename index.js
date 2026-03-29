@@ -1,6 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { initializeApp } = require('firebase/app');
 const { getDatabase, ref, get, update, push, set, remove } = require('firebase/database');
+const sistemaRecargas = require('./recargas'); // AQUÍ SE CONECTA EL NUEVO ARCHIVO
 
 // CONFIGURACIÓN
 const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ';
@@ -86,7 +87,7 @@ function buildAdminKeyboard(adminData) {
     addBtn('🎟️ Crear Cupón', 'coupons');
     addBtn('📊 Estadísticas', 'stats');
     
-    addBtn('📋 Ver Usuarios', 'stats'); // Botón modificado para el nuevo sistema
+    addBtn('📋 Ver Usuarios', 'stats'); 
     addBtn('🔨 Gest. Usuarios', 'users');
     addBtn('🛠️ Mantenimiento', 'maintenance');
     
@@ -244,22 +245,7 @@ bot.on('message', async (msg) => {
         const fileId = msg.photo[msg.photo.length - 1].file_id; 
 
         if (state.step === 'WAITING_FOR_RECEIPT') {
-            const stateData = state.data; 
-            const adminConfirmKeyboard = {
-                inline_keyboard: [
-                    [{ text: '✅ Confirmar', callback_data: `ok_rech|${stateData.webUid}|${stateData.amount}|${tgId}` }],
-                    [{ text: '❌ Rechazar', callback_data: `no_rech|${tgId}` }]
-                ]
-            };
-
-            bot.sendPhoto(SUPER_ADMIN_ID, fileId, {
-                caption: `💳 *NUEVO COMPROBANTE DE PAGO*\n\n👤 Usuario: ${stateData.username}\n🆔 ID Telegram: \`${tgId}\`\n💰 Monto Solicitado: *$${stateData.amount} USD*`,
-                parse_mode: 'Markdown',
-                reply_markup: adminConfirmKeyboard 
-            });
-            
-            userStates[chatId] = null; 
-            return bot.sendMessage(chatId, '✅ Comprobante enviado exitosamente a los administradores. Por favor espera a que se valide.', keyboard);
+            return sistemaRecargas.recibirFotoComprobante(bot, chatId, tgId, fileId, state.data, keyboard, SUPER_ADMIN_ID, userStates);
         }
 
         if (state.step === 'WAITING_FOR_USER_REFUND_PROOF') {
@@ -337,9 +323,6 @@ bot.on('message', async (msg) => {
             }
         }
 
-        // ==========================================
-        // ESTADOS DE TRANSFERENCIA DE USUARIOS
-        // ==========================================
         if (state.step === 'TRANSFER_USERNAME') {
             state.data.targetUser = text.trim();
             if(state.data.targetUser === webUser.username) return bot.sendMessage(chatId, '❌ No puedes transferirte a ti mismo.');
@@ -388,12 +371,8 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // ==========================================
-        // ESTADOS DE ADMINISTRADORES
-        // ==========================================
         if (adminData) {
             
-            // Estados para acciones directas desde el Menú de Usuario
             if (state.step === 'TEMP_BAN_TIME' && (adminData.isSuper || adminData.perms.users)) {
                 const hrs = parseFloat(text);
                 if (isNaN(hrs) || hrs <= 0) return bot.sendMessage(chatId, '❌ Cantidad de horas inválidas.');
@@ -527,7 +506,6 @@ bot.on('message', async (msg) => {
             }
 
             if (state.step === 'WAITING_FOR_REFUND_KEY' && (adminData.isSuper || adminData.perms.refunds)) {
-                // Bug corregido: se quitan espacios y comillas para la búsqueda
                 const searchKey = text.trim().replace(/`/g, '');
                 bot.sendMessage(chatId, '🔎 Buscando la Key en los registros globales...');
 
@@ -712,11 +690,7 @@ bot.on('message', async (msg) => {
             }
         }
         
-        // ==========================================
-        // ESTADOS DE USUARIO NORMAL (Continuación)
-        // ==========================================
         if (state.step === 'WAITING_FOR_USER_REFUND_KEY') {
-            // Bug de reembolso de usuario corregido
             const searchKey = text.trim().replace(/`/g, '');
             bot.sendMessage(chatId, '🔎 Verificando tu solicitud de reembolso...');
             
@@ -758,40 +732,10 @@ bot.on('message', async (msg) => {
         }
 
         if (state.step === 'WAITING_FOR_RECHARGE_AMOUNT') {
-            const amountUsd = parseFloat(text.replace(',', '.').replace('$', ''));
-            const minUsd = state.data.minUsd;
-
-            if (isNaN(amountUsd)) {
-                return bot.sendMessage(chatId, '❌ Cantidad inválida. Por favor, escribe **solo el número** (ej: 3 o 5.5).', { parse_mode: 'Markdown' });
-            }
-
-            if (amountUsd < minUsd) {
-                return bot.sendMessage(chatId, `❌ El monto mínimo para ti es de *$${minUsd} USD*. Intenta con una cantidad mayor.`, { parse_mode: 'Markdown' });
-            }
-
-            const exchangeRate = 3800;
-            const amountCop = amountUsd * exchangeRate;
-
-            const mensajePago = `✅ *MONTO CALCULADO CON ÉXITO*\n\n` +
-                                `💰 Vas a recargar: *$${amountUsd.toFixed(2)} USD*\n` +
-                                `💵 Total a pagar: *$${amountCop.toLocaleString('es-CO')} COP*\n\n` +
-                                `🏦 *PASOS PARA PAGAR Y RECARGAR:*\n` +
-                                `1. Envía exactamente *$${amountCop.toLocaleString('es-CO')} COP* a Nequi: \`3214701288\`\n` +
-                                `2. Selecciona por dónde quieres enviar tu comprobante abajo:`;
-
-            const rechargeInline = { 
-                inline_keyboard: [
-                    [{ text: '💬 Enviar por WhatsApp', url: 'https://wa.me/573142369516' }],
-                    [{ text: '📸 Enviar por Aquí (Telegram)', callback_data: `send_receipt|${amountUsd}` }]
-                ] 
-            };
-
-            userStates[chatId] = null; 
-            return bot.sendMessage(chatId, mensajePago, { parse_mode: 'Markdown', reply_markup: rechargeInline });
+            return sistemaRecargas.procesarMonto(bot, chatId, text, state.data.minUsd, userStates);
         }
-    } // FIN DE ESTADOS
+    } 
 
-    // COMANDOS DE USUARIO NORMAL
     if (text === '💸 Transferir Saldo') {
         userStates[chatId] = { step: 'TRANSFER_USERNAME', data: {} };
         return bot.sendMessage(chatId, '💸 *TRANSFERIR SALDO*\n\nEscribe el *Nombre de Usuario* exacto de la persona a la que le quieres enviar saldo:', { parse_mode: 'Markdown' });
@@ -816,26 +760,7 @@ bot.on('message', async (msg) => {
     }
 
     if (text === '💳 Recargas') {
-        let totalRecharged = 0;
-        if (webUser.recharges) {
-            Object.values(webUser.recharges).forEach(r => {
-                totalRecharged += parseFloat(r.amount || 0);
-            });
-        }
-
-        const minUsd = totalRecharged > 5 ? 2 : 3;
-        const exchangeRate = 3800;
-
-        userStates[chatId] = { step: 'WAITING_FOR_RECHARGE_AMOUNT', data: { minUsd: minUsd } };
-
-        const mensajeRequisitos = `💳 *NUEVA RECARGA*\n\n` +
-                               `💵 *Tasa de Cambio:* $1 USD = $${exchangeRate.toLocaleString('es-CO')} COP\n` +
-                               `📈 *Total recargado por ti:* $${totalRecharged.toFixed(2)} USD\n\n` +
-                               `✅ *Tu recarga mínima es de:* *$${minUsd} USD*\n\n` +
-                               `👇 *Escribe la cantidad en USD* que deseas recargar:\n` +
-                               `_(Escribe solo el número, por ejemplo: ${minUsd} o 5.5)_`;
-
-        return bot.sendMessage(chatId, mensajeRequisitos, { parse_mode: 'Markdown' });
+        return sistemaRecargas.iniciarRecarga(bot, chatId, webUser, userStates);
     }
 
     if (text === '🛒 Tienda') {
@@ -865,18 +790,13 @@ bot.on('message', async (msg) => {
         return bot.sendMessage(chatId, header, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
     }
 
-    // ==========================================
-    // COMANDOS DE ADMINISTRADORES
-    // ==========================================
     if (adminData) {
         
-        // SUPER ADMIN EXCLUSIVO
         if (text === '👮 Gest. Admins' && adminData.isSuper) {
             userStates[chatId] = { step: 'WAITING_FOR_ADMIN_ID', data: {} };
             return bot.sendMessage(chatId, '👮 *SISTEMA DE ADMINISTRADORES*\n\nPor favor, escribe el **ID de Telegram** del usuario que deseas convertir en Admin o cuyos permisos quieres editar:\n\n_(Ejemplo: 123456789)_', { parse_mode: 'Markdown' });
         }
 
-        // COMANDO MODIFICADO: VER USUARIOS
         if (text === '📋 Ver Usuarios' && (adminData.isSuper || adminData.perms.stats)) {
             const opts = {
                 inline_keyboard: [
@@ -1030,7 +950,6 @@ bot.on('callback_query', async (query) => {
     const webUid = await getAuthUser(tgId);
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado.`);
 
-    // Obtener el nombre de usuario del Admin para el log
     const adminUserSnap = await get(ref(db, `users/${webUid}`));
     const adminUsername = adminUserSnap.exists() ? adminUserSnap.val().username : 'Desconocido';
 
@@ -1042,11 +961,7 @@ bot.on('callback_query', async (query) => {
         if (adminUserSnap.val()?.banned || isMaintenance) return;
     }
 
-    // ==========================================
-    // CALLBACKS DEL SUPER ADMIN PARA GESTIÓN
-    // ==========================================
     if (adminData && adminData.isSuper) {
-        // Alternar Permisos
         if (data.startsWith('tgp|')) {
             const parts = data.split('|');
             const targetTgId = parts[1];
@@ -1058,13 +973,11 @@ bot.on('callback_query', async (query) => {
             
             await set(adminRef, !currentVal);
             
-            // Recargar para refrescar teclado
             const updatedSnap = await get(ref(db, `admins/${targetTgId}/perms`));
             bot.editMessageReplyMarkup(buildAdminManagerInline(targetTgId, updatedSnap.val()), { chat_id: chatId, message_id: query.message.message_id });
             return;
         }
 
-        // Eliminar Administrador
         if (data.startsWith('deladm|')) {
             const targetTgId = data.split('|')[1];
             await remove(ref(db, `admins/${targetTgId}`));
@@ -1073,11 +986,7 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // ==========================================
-    // CALLBACKS DE ADMINS (CON PERMISOS)
-    // ==========================================
     if (adminData) {
-        // NUEVOS CALLBACKS DE VER/GESTIONAR USUARIOS
         if (data.startsWith('viewu|') && (adminData.isSuper || adminData.perms.stats)) {
             const filter = data.split('|')[1];
             bot.editMessageText('⏳ Generando lista, por favor espera...', { chat_id: chatId, message_id: query.message.message_id });
@@ -1106,7 +1015,7 @@ bot.on('callback_query', async (query) => {
             }
 
             if (inlineKeyboard.length > 90) {
-                inlineKeyboard = inlineKeyboard.slice(0, 90); // Evitar error de Telegram de botones infinitos
+                inlineKeyboard = inlineKeyboard.slice(0, 90); 
                 bot.sendMessage(chatId, '⚠️ Mostrando los primeros 90 usuarios debido a límites de la plataforma.');
             }
 
@@ -1151,7 +1060,6 @@ bot.on('callback_query', async (query) => {
             }
         }
 
-        // CALLBACKS ORIGINALES 
         if (data.startsWith('cpntype|') && (adminData.isSuper || adminData.perms.coupons)) {
             const type = data.split('|')[1] === 'bal' ? 'balance' : 'discount';
             userStates[chatId].data.type = type;
@@ -1273,44 +1181,12 @@ bot.on('callback_query', async (query) => {
 
         if (data.startsWith('ok_rech|') && (adminData.isSuper || adminData.perms.balance)) {
             const parts = data.split('|');
-            const targetWebUid = parts[1];
-            const amount = parseFloat(parts[2]);
-            const targetTgId = parts[3];
-
-            bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
-            bot.sendMessage(chatId, '⚙️ Acreditando saldo al usuario...');
-
-            const userSnap = await get(ref(db, `users/${targetWebUid}`));
-            if (userSnap.exists()) {
-                const currentBal = parseFloat(userSnap.val().balance || 0);
-                const nuevoSaldo = currentBal + amount;
-
-                const updates = {};
-                updates[`users/${targetWebUid}/balance`] = nuevoSaldo;
-                const rechRef = push(ref(db, `users/${targetWebUid}/recharges`));
-                updates[`users/${targetWebUid}/recharges/${rechRef.key}`] = { amount: amount, date: Date.now() };
-
-                await update(ref(db), updates);
-
-                bot.sendMessage(chatId, `✅ Pago aprobado. Se añadieron $${amount} USD a ${userSnap.val().username}.`);
-                bot.sendMessage(targetTgId, `🎉 *¡RECARGA APROBADA!*\n\nTu pago ha sido confirmado. Se han añadido *$${amount} USD* a tu cuenta.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
-                
-                notifySuperAdmin(adminUsername, tgId, 'Aprobó Recarga', `Acreditó $${amount} USD a la cuenta de ${userSnap.val().username}`);
-            } else {
-                bot.sendMessage(chatId, '❌ Hubo un error buscando al usuario en Firebase.');
-            }
-            return;
+            return sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, parts[1], parseFloat(parts[2]), parts[3], adminUsername, tgId, notifySuperAdmin);
         }
 
         if (data.startsWith('no_rech|') && (adminData.isSuper || adminData.perms.balance)) {
-            const targetTgId = data.split('|')[1];
-            bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
-            
-            bot.sendMessage(chatId, '❌ Comprobante rechazado.');
-            bot.sendMessage(targetTgId, '❌ *RECARGA RECHAZADA*\n\nTu comprobante no fue válido. Si crees que es un error, por favor contacta al soporte enviando un mensaje directo.', { parse_mode: 'Markdown' });
-            
-            notifySuperAdmin(adminUsername, tgId, 'Rechazó Recarga', `Comprobante rechazado para el Telegram ID: ${targetTgId}`);
-            return;
+            const parts = data.split('|');
+            return sistemaRecargas.rechazarRecarga(bot, chatId, query.message.message_id, parts[1], adminUsername, tgId, notifySuperAdmin);
         }
 
         if (data.startsWith('stock|') && (adminData.isSuper || adminData.perms.products)) {
@@ -1320,19 +1196,9 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // ==========================================
-    // CALLBACKS DE USUARIO NORMAL
-    // ==========================================
     if (data.startsWith('send_receipt|')) {
         const amountRequest = parseFloat(data.split('|')[1]);
-        const userSnap = await get(ref(db, `users/${webUid}`));
-        
-        if (!userSnap.exists()) return bot.sendMessage(chatId, '❌ Error: No pudimos cargar tus datos.');
-        
-        const username = userSnap.val().username;
-        
-        userStates[chatId] = { step: 'WAITING_FOR_RECEIPT', data: { username: username, amount: amountRequest, webUid: webUid } };
-        return bot.sendMessage(chatId, '📸 Por favor, envía la **foto de tu comprobante** de pago ahora mismo.\n\n_(Asegúrate de que la captura se vea clara)_', { parse_mode: 'Markdown' });
+        return sistemaRecargas.solicitarComprobante(bot, db, chatId, webUid, amountRequest, userStates);
     }
 
     if (data.startsWith('buy|')) {
