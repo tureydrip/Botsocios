@@ -3,7 +3,7 @@ const { initializeApp } = require('firebase/app');
 const { getDatabase, ref, get, update, push, set, remove } = require('firebase/database');
 const sistemaRecargas = require('./recargas');
 
-// CONFIGURACIÓN
+// CONFIGURACIÓN MASTER
 const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
@@ -19,15 +19,118 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// SISTEMA DE ESTADOS 
+// SISTEMA DE ESTADOS MASTER
 const userStates = {}; 
+
+// ==========================================
+// 🤖 GESTOR DE SUB-BOTS (MODELO BaaS)
+// ==========================================
+const botsActivos = {}; 
+
+function iniciarSubBot(ownerUid, botToken, ownerTgId) {
+    if (botsActivos[ownerUid]) {
+        botsActivos[ownerUid].stopPolling(); 
+    }
+
+    const subBot = new TelegramBot(botToken, { polling: true });
+    botsActivos[ownerUid] = subBot;
+    console.log(`🟢 Sub-Bot encendido para el cliente UID: ${ownerUid}`);
+    
+    subBot.onText(/\/start/, (msg) => {
+        const chatId = msg.chat.id;
+        subBot.sendMessage(chatId, `¡Hola! Soy un bot gestionado por un cliente de LUCK XIT.\n\nPara simular un pago, envíame una foto (comprobante).`);
+    });
+
+    subBot.on('photo', async (msg) => {
+        const chatId = msg.chat.id;
+        const fileId = msg.photo[msg.photo.length - 1].file_id;
+        const senderUsername = msg.from.username || 'Usuario';
+
+        subBot.sendMessage(chatId, '✅ Comprobante enviado a mi administrador.');
+
+        const tecladoDueño = {
+            inline_keyboard: [
+                [{ text: '✅ Aprobar', callback_data: `sub_aprobar|${chatId}` }, { text: '❌ Rechazar', callback_data: `sub_rechazar|${chatId}` }],
+                [{ text: '🕵️‍♂️ Mandar a revisar (Soporte LUCK XIT)', callback_data: `ask_review|${fileId}|${chatId}` }]
+            ]
+        };
+
+        subBot.sendPhoto(ownerTgId, fileId, {
+            caption: `💳 *NUEVO PAGO EN TU BOT*\n\n👤 De: @${senderUsername}\n\n¿Qué deseas hacer?`,
+            parse_mode: 'Markdown',
+            reply_markup: tecladoDueño
+        });
+    });
+
+    subBot.on('callback_query', async (query) => {
+        const data = query.data;
+        subBot.answerCallbackQuery(query.id);
+
+        if (data.startsWith('sub_aprobar|')) {
+            const targetChat = data.split('|')[1];
+            subBot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: query.message.chat.id, message_id: query.message.message_id });
+            subBot.sendMessage(query.message.chat.id, '✅ Aprobaste el pago de tu cliente.');
+            subBot.sendMessage(targetChat, '🎉 Tu pago fue aprobado por el administrador.');
+        }
+
+        if (data.startsWith('sub_rechazar|')) {
+            const targetChat = data.split('|')[1];
+            subBot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: query.message.chat.id, message_id: query.message.message_id });
+            subBot.sendMessage(query.message.chat.id, '❌ Rechazaste el pago.');
+            subBot.sendMessage(targetChat, '❌ Tu pago fue rechazado.');
+        }
+
+        if (data.startsWith('ask_review|')) {
+            const fileId = data.split('|')[1];
+            const targetChat = data.split('|')[2]; 
+
+            subBot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: query.message.chat.id, message_id: query.message.message_id });
+            subBot.sendMessage(query.message.chat.id, '⏳ *Comprobante enviado a la central de LUCK XIT.* Espera el veredicto de los Master Admins.', { parse_mode: 'Markdown' });
+
+            const reviewRef = push(ref(db, 'verificaciones_pendientes'));
+            await set(reviewRef, { ownerTgId: ownerTgId, targetChat: targetChat, subBotToken: botToken });
+
+            const tecladoMaster = {
+                inline_keyboard: [
+                    [{ text: '🟢 ES REAL (Avisar al cliente)', callback_data: `master_real|${reviewRef.key}` }],
+                    [{ text: '🔴 ES FALSO (Avisar al cliente)', callback_data: `master_falso|${reviewRef.key}` }]
+                ]
+            };
+
+            bot.sendPhoto(SUPER_ADMIN_ID, fileId, {
+                caption: `🚨 *REVISIÓN SOLICITADA POR UN CLIENTE (BaaS)*\n\nTu cliente ID \`${ownerTgId}\` solicita verificar este comprobante.\n\n¿Es real o falso?`,
+                parse_mode: 'Markdown',
+                reply_markup: tecladoMaster
+            });
+        }
+    });
+}
+
+async function arrancarTodosLosBots() {
+    const botsSnap = await get(ref(db, 'rented_bots'));
+    if (botsSnap.exists()) {
+        const now = Date.now();
+        botsSnap.forEach(child => {
+            const data = child.val();
+            if (data.status === 'active' && data.expiresAt > now) {
+                iniciarSubBot(child.key, data.botToken, data.ownerTgId);
+            }
+        });
+    }
+}
+arrancarTodosLosBots();
+
+// ==========================================
+// FIN GESTOR DE SUB-BOTS
+// ==========================================
 
 const userKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
             [{ text: '💳 Recargas' }, { text: '🔄 Solicitar Reembolso' }],
-            [{ text: '🎟️ Canjear Cupón' }, { text: '💸 Transferir Saldo' }] 
+            [{ text: '🎟️ Canjear Cupón' }, { text: '💸 Transferir Saldo' }],
+            [{ text: '🤖 Mi Bot (Alquiler)' }] 
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -36,65 +139,34 @@ const userKeyboard = {
 
 function notifySuperAdmin(adminUsername, adminTgId, action, details) {
     if (adminTgId === SUPER_ADMIN_ID) return; 
-    
-    const msg = `🕵️‍♂️ *REPORTE DE ADMINISTRADOR*\n\n` +
-                `👮 *Admin:* ${adminUsername} (\`${adminTgId}\`)\n` +
-                `🛠️ *Acción:* ${action}\n` +
-                `📝 *Detalle:* ${details}`;
-                
+    const msg = `🕵️‍♂️ *REPORTE DE ADMINISTRADOR*\n\n👮 *Admin:* ${adminUsername} (\`${adminTgId}\`)\n🛠️ *Acción:* ${action}\n📝 *Detalle:* ${details}`;
     bot.sendMessage(SUPER_ADMIN_ID, msg, { parse_mode: 'Markdown' }).catch(() => {});
 }
 
 async function getAdminData(tgId) {
     if (tgId === SUPER_ADMIN_ID) {
-        return {
-            isSuper: true,
-            perms: { products: true, balance: true, broadcast: true, refunds: true, coupons: true, stats: true, users: true, maintenance: true }
-        };
+        return { isSuper: true, perms: { products: true, balance: true, broadcast: true, refunds: true, coupons: true, stats: true, users: true, maintenance: true } };
     }
     const snap = await get(ref(db, `admins/${tgId}`));
-    if (snap.exists()) {
-        return { isSuper: false, perms: snap.val().perms || {} };
-    }
+    if (snap.exists()) return { isSuper: false, perms: snap.val().perms || {} };
     return null;
 }
 
 function buildAdminKeyboard(adminData) {
-    const kb = [];
-    let row = [];
-    
+    const kb = []; let row = [];
     const addBtn = (text, perm) => {
-        if (adminData.isSuper || adminData.perms[perm]) {
-            row.push({ text });
-            if (row.length === 3) { kb.push(row); row = []; }
-        }
+        if (adminData.isSuper || adminData.perms[perm]) { row.push({ text }); if (row.length === 3) { kb.push(row); row = []; } }
     };
     
-    addBtn('📦 Crear Producto', 'products');
-    addBtn('📝 Editar Producto', 'products');
-    addBtn('🗑️ Eliminar Producto', 'products');
-    
-    addBtn('🔑 Añadir Stock', 'products');
-    addBtn('💰 Añadir Saldo', 'balance');
-    addBtn('📢 Mensaje Global', 'broadcast');
-    
-    addBtn('🔄 Revisar Reembolsos', 'refunds');
-    addBtn('🎟️ Crear Cupón', 'coupons');
-    addBtn('📊 Estadísticas', 'stats');
-    
-    addBtn('📋 Ver Usuarios', 'stats'); 
-    addBtn('🔨 Gest. Usuarios', 'users');
-    addBtn('🛠️ Mantenimiento', 'maintenance');
+    addBtn('📦 Crear Producto', 'products'); addBtn('📝 Editar Producto', 'products'); addBtn('🗑️ Eliminar Producto', 'products');
+    addBtn('🔑 Añadir Stock', 'products'); addBtn('💰 Añadir Saldo', 'balance'); addBtn('📢 Mensaje Global', 'broadcast');
+    addBtn('🔄 Revisar Reembolsos', 'refunds'); addBtn('🎟️ Crear Cupón', 'coupons'); addBtn('📊 Estadísticas', 'stats');
+    addBtn('📋 Ver Usuarios', 'stats'); addBtn('🔨 Gest. Usuarios', 'users'); addBtn('🛠️ Mantenimiento', 'maintenance');
     
     if (row.length > 0) kb.push(row);
-    
     let bottomRow = [];
-    if (adminData.isSuper) {
-        bottomRow.push({ text: '👮 Gest. Admins' });
-        bottomRow.push({ text: '🌍 Gest. Países' });
-    }
-    bottomRow.push({ text: '❌ Cancelar Acción' });
-    kb.push(bottomRow);
+    if (adminData.isSuper) { bottomRow.push({ text: '👮 Gest. Admins' }); bottomRow.push({ text: '🌍 Gest. Países' }); }
+    bottomRow.push({ text: '❌ Cancelar Acción' }); kb.push(bottomRow);
     
     return { reply_markup: { keyboard: kb, resize_keyboard: true, is_persistent: true } };
 }
@@ -125,9 +197,7 @@ async function sendUserManageMenu(chatId, targetUid, bot) {
     const targetUser = uSnap.val();
 
     let totalSpent = 0;
-    if (targetUser.history) {
-        Object.values(targetUser.history).forEach(h => totalSpent += parseFloat(h.price || 0));
-    }
+    if (targetUser.history) { Object.values(targetUser.history).forEach(h => totalSpent += parseFloat(h.price || 0)); }
 
     let isBanned = targetUser.banned || false;
     let banText = isBanned ? '🔴 BANEADO PERMANENTE' : '🟢 ACTIVO';
@@ -138,12 +208,7 @@ async function sendUserManageMenu(chatId, targetUid, bot) {
         banText = `⏳ BANEADO TEMPORAL (${hoursLeft} hrs restantes)`;
     }
 
-    const msgInfo = `👤 *GESTIÓN DE USUARIO*\n\n` +
-                    `*Nombre:* ${targetUser.username}\n` +
-                    `*Saldo:* $${parseFloat(targetUser.balance||0).toFixed(2)} USD\n` +
-                    `*Gastado Total:* $${totalSpent.toFixed(2)} USD\n` +
-                    `*Estado:* ${banText}`;
-
+    const msgInfo = `👤 *GESTIÓN DE USUARIO*\n\n*Nombre:* ${targetUser.username}\n*Saldo:* $${parseFloat(targetUser.balance||0).toFixed(2)} USD\n*Gastado Total:* $${totalSpent.toFixed(2)} USD\n*Estado:* ${banText}`;
     const inlineKeyboard = [
         [{ text: '➕ Agregar Saldo', callback_data: `uact|addbal|${targetUid}` }, { text: '➖ Quitar Saldo', callback_data: `uact|rembal|${targetUid}` }],
         [{ text: isBanned ? '✅ Desbanear' : '🔨 Ban Permanente', callback_data: `uact|banperm|${targetUid}` }, { text: '⏳ Ban Temporal', callback_data: `uact|bantemp|${targetUid}` }]
@@ -158,26 +223,19 @@ bot.onText(/\/start/, async (msg) => {
     userStates[chatId] = null; 
 
     const webUid = await getAuthUser(tgId);
-
     if (!webUid) {
-        const textoBloqueo = `🛑 *ACCESO DENEGADO*\n\nTu dispositivo no está vinculado a una cuenta web.\n\n🔑 *TU ID DE TELEGRAM ES:* \`${tgId}\`\n\nVe a la web, vincula tu cuenta y vuelve a escribir /start.`;
-        return bot.sendMessage(chatId, textoBloqueo, { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, `🛑 *ACCESO DENEGADO*\n\nTu dispositivo no está vinculado a una cuenta web.\n\n🔑 *TU ID DE TELEGRAM ES:* \`${tgId}\`\n\nVe a la web, vincula tu cuenta y vuelve a escribir /start.`, { parse_mode: 'Markdown' });
     }
 
     const userSnap = await get(ref(db, `users/${webUid}`));
     const webUser = userSnap.val();
-    
-    if (!webUser) {
-        return bot.sendMessage(chatId, '⚠️ *ERROR CRÍTICO*\n\nTu cuenta web fue eliminada o no se encuentra en la base de datos. Contacta a soporte.', { parse_mode: 'Markdown' });
-    }
+    if (!webUser) return bot.sendMessage(chatId, '⚠️ *ERROR CRÍTICO*\n\nTu cuenta web fue eliminada o no se encuentra en la base de datos. Contacta a soporte.', { parse_mode: 'Markdown' });
 
     const adminData = await getAdminData(tgId);
     const keyboard = adminData ? buildAdminKeyboard(adminData) : userKeyboard;
     
     let greeting = `🌌 Bienvenido a LUCK XIT, *${webUser.username}*.`;
-    if (adminData) {
-        greeting = adminData.isSuper ? `👑 ¡Bienvenido Super Admin LUCK XIT, *${webUser.username}*!` : `🛡️ Bienvenido Admin, *${webUser.username}*.`;
-    }
+    if (adminData) greeting = adminData.isSuper ? `👑 ¡Bienvenido Super Admin LUCK XIT, *${webUser.username}*!` : `🛡️ Bienvenido Admin, *${webUser.username}*.`;
 
     bot.sendMessage(chatId, `${greeting}\nUsa los botones de abajo para navegar.`, { parse_mode: 'Markdown', ...keyboard });
 });
@@ -199,10 +257,7 @@ bot.on('message', async (msg) => {
     
     const userSnap = await get(ref(db, `users/${webUid}`));
     const webUser = userSnap.val();
-
-    if (!webUser) {
-        return bot.sendMessage(chatId, '⚠️ *ERROR CRÍTICO*\n\nTu cuenta web fue eliminada. Contacta a soporte.', { parse_mode: 'Markdown' });
-    }
+    if (!webUser) return bot.sendMessage(chatId, '⚠️ *ERROR CRÍTICO*\n\nTu cuenta web fue eliminada.', { parse_mode: 'Markdown' });
 
     const adminData = await getAdminData(tgId);
     const keyboard = adminData ? buildAdminKeyboard(adminData) : userKeyboard;
@@ -216,17 +271,8 @@ bot.on('message', async (msg) => {
             await update(ref(db), { [`users/${webUid}/banned`]: false, [`users/${webUid}/banUntil`]: null });
         }
 
-        if (isBanned) {
-            let banMsg = '🚫 *ESTÁS BANEADO*\n\nHas sido bloqueado del sistema LUCK XIT por violar nuestras políticas o reglas. Si crees que es un error, contacta a soporte.';
-            if (webUser.banUntil) {
-                const hrsLeft = ((webUser.banUntil - Date.now()) / 3600000).toFixed(1);
-                banMsg = `⏳ *BANEADO TEMPORALMENTE*\n\nTu cuenta ha sido suspendida. Tiempo restante: **${hrsLeft} horas**.`;
-            }
-            return bot.sendMessage(chatId, banMsg, { parse_mode: 'Markdown' });
-        }
-        if (isMaintenance) {
-            return bot.sendMessage(chatId, '🛠️ *MODO MANTENIMIENTO ACTIVO*\n\nEstamos haciendo unas mejoras rápidas en el bot. Volveremos a estar en línea muy pronto. ¡Gracias por tu paciencia!', { parse_mode: 'Markdown' });
-        }
+        if (isBanned) return bot.sendMessage(chatId, '🚫 *ESTÁS BANEADO*\n\nHas sido bloqueado del sistema LUCK XIT. Contacta a soporte.', { parse_mode: 'Markdown' });
+        if (isMaintenance) return bot.sendMessage(chatId, '🛠️ *MODO MANTENIMIENTO ACTIVO*\n\nEstamos haciendo mejoras. Volveremos pronto.', { parse_mode: 'Markdown' });
     }
 
     if (text === '❌ Cancelar Acción') {
@@ -247,25 +293,16 @@ bot.on('message', async (msg) => {
             const reason = msg.caption ? msg.caption : 'Sin razón especificada';
             const dateStr = new Date(foundData.compra.date).toLocaleString('es-CO');
 
-            const msgInfo = `🔔 *NUEVA SOLICITUD DE REEMBOLSO (CON PRUEBA)*\n\n` +
-                        `👤 *Usuario:* ${foundData.username}\n` +
-                        `📦 *Producto:* ${foundData.compra.product}\n` +
-                        `🔑 *Key:* \`${foundData.compra.key}\`\n` +
-                        `💰 *Pagado:* $${parseFloat(foundData.compra.price).toFixed(2)} USD\n` +
-                        `📅 *Fecha:* ${dateStr}\n` +
-                        `📝 *Motivo del usuario:* ${reason}\n\n` +
-                        `¿Deseas aprobar la solicitud y devolver el dinero?`;
-
+            const msgInfo = `🔔 *NUEVA SOLICITUD DE REEMBOLSO*\n\n👤 *Usuario:* ${foundData.username}\n📦 *Producto:* ${foundData.compra.product}\n🔑 *Key:* \`${foundData.compra.key}\`\n💰 *Pagado:* $${parseFloat(foundData.compra.price).toFixed(2)} USD\n📝 *Motivo:* ${reason}`;
             const refundKeyboard = {
                 inline_keyboard: [
                     [{ text: '✅ Mandar Reembolso', callback_data: `rfnd|${foundData.uid}|${foundData.histId}` }],
                     [{ text: '❌ Rechazar Solicitud', callback_data: `reject_refund|${foundData.targetTgId}` }]
                 ]
             };
-            
             bot.sendPhoto(SUPER_ADMIN_ID, fileId, { caption: msgInfo, parse_mode: 'Markdown', reply_markup: refundKeyboard });
             userStates[chatId] = null;
-            return bot.sendMessage(chatId, '✅ Tu solicitud y captura han sido enviadas exitosamente. Recibirás una notificación pronto.', keyboard);
+            return bot.sendMessage(chatId, '✅ Tu solicitud ha sido enviada.', keyboard);
         }
     }
 
@@ -274,6 +311,26 @@ bot.on('message', async (msg) => {
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
+        if (state.step === 'WAITING_FOR_BOT_TOKEN') {
+            const botToken = text.trim();
+            if (!botToken.includes(':')) return bot.sendMessage(chatId, '❌ Ese token no parece válido. Intenta de nuevo:');
+
+            const expireDate = Date.now() + (30 * 24 * 60 * 60 * 1000); 
+            
+            await set(ref(db, `rented_bots/${webUid}`), {
+                botToken: botToken,
+                ownerTgId: tgId,
+                status: 'active',
+                expiresAt: expireDate
+            });
+
+            bot.sendMessage(chatId, `🚀 *¡TU BOT HA SIDO CREADO Y ENCENDIDO!*\n\nEl sistema gestionará tu bot en segundo plano durante los próximos 30 días.\n\nVe a tu bot y escribe /start para probarlo.`, { parse_mode: 'Markdown', ...keyboard });
+            
+            iniciarSubBot(webUid, botToken, tgId);
+            userStates[chatId] = null;
+            return;
+        }
+
         if (state.step === 'WAITING_FOR_RECEIPT' || state.step === 'WAITING_FOR_USER_REFUND_PROOF') {
             return bot.sendMessage(chatId, '❌ Debes adjuntar una **foto (captura de pantalla)** para continuar.\n\n_(Si deseas salir, usa el menú o escribe "❌ Cancelar Acción")_', { parse_mode: 'Markdown' });
         }
@@ -281,19 +338,11 @@ bot.on('message', async (msg) => {
         if (state.step === 'REDEEM_COUPON') {
             const code = text.trim().toUpperCase();
             const couponSnap = await get(ref(db, `coupons/${code}`));
-            
-            if (!couponSnap.exists()) {
-                userStates[chatId] = null;
-                return bot.sendMessage(chatId, '❌ *CUPÓN INVÁLIDO*\n\nEse código no existe o lo has escrito mal.', { parse_mode: 'Markdown', ...keyboard });
-            }
+            if (!couponSnap.exists()) { userStates[chatId] = null; return bot.sendMessage(chatId, '❌ *CUPÓN INVÁLIDO*', { parse_mode: 'Markdown', ...keyboard }); }
 
             const couponData = couponSnap.val();
             const userUsedCouponsSnap = await get(ref(db, `users/${webUid}/used_coupons/${code}`));
-            
-            if (userUsedCouponsSnap.exists()) {
-                userStates[chatId] = null;
-                return bot.sendMessage(chatId, '⚠️ *YA USASTE ESTE CUPÓN*\n\nSolo se puede canjear una vez por cuenta.', { parse_mode: 'Markdown', ...keyboard });
-            }
+            if (userUsedCouponsSnap.exists()) { userStates[chatId] = null; return bot.sendMessage(chatId, '⚠️ *YA USASTE ESTE CUPÓN*', { parse_mode: 'Markdown', ...keyboard }); }
 
             const updates = {};
             updates[`users/${webUid}/used_coupons/${code}`] = true;
@@ -301,16 +350,13 @@ bot.on('message', async (msg) => {
             if (couponData.type === 'balance') {
                 const currentBal = parseFloat(webUser.balance || 0);
                 const reward = parseFloat(couponData.value);
-                const nuevoSaldo = currentBal + reward;
-                updates[`users/${webUid}/balance`] = nuevoSaldo;
-                
+                updates[`users/${webUid}/balance`] = currentBal + reward;
                 await update(ref(db), updates);
                 userStates[chatId] = null;
-                return bot.sendMessage(chatId, `🎉 *¡CUPÓN CANJEADO CON ÉXITO!*\n\nSe han añadido *$${reward} USD* a tu saldo.\n💰 *Nuevo saldo:* $${nuevoSaldo.toFixed(2)} USD`, { parse_mode: 'Markdown', ...keyboard });
+                return bot.sendMessage(chatId, `🎉 *¡CUPÓN CANJEADO CON ÉXITO!*\n\n💰 *Nuevo saldo:* $${(currentBal + reward).toFixed(2)} USD`, { parse_mode: 'Markdown', ...keyboard });
             } else if (couponData.type === 'discount') {
                 const discount = parseFloat(couponData.value);
                 updates[`users/${webUid}/active_discount`] = discount;
-                
                 await update(ref(db), updates);
                 userStates[chatId] = null;
                 return bot.sendMessage(chatId, `🎟️ *¡CUPÓN DE DESCUENTO APLICADO!*\n\nHas activado un descuento del **${discount}%**.\n🛍️ Se aplicará automáticamente en tu **próxima compra** de cualquier producto en la tienda.`, { parse_mode: 'Markdown', ...keyboard });
@@ -366,7 +412,6 @@ bot.on('message', async (msg) => {
         }
 
         if (adminData) {
-            
             if (state.step === 'TEMP_BAN_TIME' && (adminData.isSuper || adminData.perms.users)) {
                 const hrs = parseFloat(text);
                 if (isNaN(hrs) || hrs <= 0) return bot.sendMessage(chatId, '❌ Cantidad de horas inválidas.');
@@ -730,19 +775,39 @@ bot.on('message', async (msg) => {
         }
     } 
 
+    if (text === '🤖 Mi Bot (Alquiler)') {
+        const rentSnap = await get(ref(db, `rented_bots/${webUid}`));
+        
+        if (rentSnap.exists()) {
+            const rentData = rentSnap.val();
+            const diasRestantes = Math.ceil((rentData.expiresAt - Date.now()) / (1000 * 60 * 60 * 24));
+            
+            const txt = `🤖 *PANEL DE TU BOT*\n\nEstado: ${rentData.status === 'active' ? '🟢 Activo' : '🔴 Pausado'}\nExpira en: ${diasRestantes} días\n\n¿Qué deseas hacer?`;
+            const kb = {
+                inline_keyboard: [
+                    [{ text: rentData.status === 'active' ? '⏸️ Pausar Bot' : '▶️ Reanudar Bot', callback_data: `rent_toggle|${webUid}` }],
+                    [{ text: '🔄 Cambiar Token', callback_data: `rent_change_token|${webUid}` }],
+                    [{ text: '💵 Renovar Mes ($10 USD)', callback_data: `rent_renew|${webUid}` }]
+                ]
+            };
+            return bot.sendMessage(chatId, txt, { parse_mode: 'Markdown', reply_markup: kb });
+        } else {
+            const txt = `🤖 *ALQUILER DE BOT (BaaS)*\n\nCrea tu propia tienda automática gestionada 100% por nuestros servidores. Tendrás tu propio panel, tus usuarios y tus propios comprobantes.\n\n💵 *Precio:* $10.00 USD / Mensual\n💰 *Tu Saldo Actual:* $${parseFloat(webUser.balance || 0).toFixed(2)} USD\n\n¿Deseas alquilar un mes de servicio y crear tu bot?`;
+            const kb = {
+                inline_keyboard: [[{ text: '✅ Pagar $10 USD y Crear', callback_data: `rent_buy|${webUid}` }]]
+            };
+            return bot.sendMessage(chatId, txt, { parse_mode: 'Markdown', reply_markup: kb });
+        }
+    }
+
     if (text === '💸 Transferir Saldo') {
         userStates[chatId] = { step: 'TRANSFER_USERNAME', data: {} };
-        return bot.sendMessage(chatId, '💸 *TRANSFERIR SALDO*\n\nEscribe el *Nombre de Usuario* exacto de la persona a la que le quieres enviar saldo:', { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, '💸 *TRANSFERIR SALDO*\n\nEscribe el *Nombre de Usuario* exacto:', { parse_mode: 'Markdown' });
     }
 
     if (text === '🎟️ Canjear Cupón') {
         userStates[chatId] = { step: 'REDEEM_COUPON', data: {} };
         return bot.sendMessage(chatId, '🎁 *CANJEAR CUPÓN*\n\nEscribe el código promocional:', { parse_mode: 'Markdown' });
-    }
-
-    if (text === '🔄 Solicitar Reembolso') {
-        userStates[chatId] = { step: 'WAITING_FOR_USER_REFUND_KEY', data: { webUid: webUid } };
-        return bot.sendMessage(chatId, '🔄 *SOLICITUD DE REEMBOLSO*\n\nPor favor, escribe y envía la **Key** exacta de la compra que deseas que te reembolsemos:', { parse_mode: 'Markdown' });
     }
 
     if (text === '👤 Mi Perfil') {
@@ -785,11 +850,8 @@ bot.on('message', async (msg) => {
     }
 
     if (adminData) {
+        if (text === '🌍 Gest. Países' && adminData.isSuper) return sistemaRecargas.menuPaisesAdmin(bot, db, chatId);
 
-        if (text === '🌍 Gest. Países' && adminData.isSuper) {
-            return sistemaRecargas.menuPaisesAdmin(bot, db, chatId);
-        }
-        
         if (text === '👮 Gest. Admins' && adminData.isSuper) {
             userStates[chatId] = { step: 'WAITING_FOR_ADMIN_ID', data: {} };
             return bot.sendMessage(chatId, '👮 *SISTEMA DE ADMINISTRADORES*\n\nPor favor, escribe el **ID de Telegram** del usuario que deseas convertir en Admin o cuyos permisos quieres editar:\n\n_(Ejemplo: 123456789)_', { parse_mode: 'Markdown' });
@@ -950,16 +1012,34 @@ bot.on('callback_query', async (query) => {
 
     const adminUserSnap = await get(ref(db, `users/${webUid}`));
     const adminUsername = adminUserSnap.exists() ? adminUserSnap.val().username : 'Desconocido';
+    const webUser = adminUserSnap.val();
 
     const adminData = await getAdminData(tgId);
 
-    if (!adminData) {
-        const settingsSnap = await get(ref(db, 'settings'));
-        const isMaintenance = settingsSnap.val()?.maintenance || false;
-        if (adminUserSnap.val()?.banned || isMaintenance) return;
-    }
-
+    // ==========================================
+    // CALLBACKS MASTER (Revisión de comprobantes BaaS)
+    // ==========================================
     if (adminData && adminData.isSuper) {
+        if (data.startsWith('master_real|') || data.startsWith('master_falso|')) {
+            const esReal = data.startsWith('master_real');
+            const receiptId = data.split('|')[1];
+            bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+            
+            const reviewSnap = await get(ref(db, `verificaciones_pendientes/${receiptId}`));
+            if (!reviewSnap.exists()) return bot.sendMessage(chatId, '⚠️ Este reporte ya fue gestionado.');
+
+            const reviewData = reviewSnap.val();
+            await remove(ref(db, `verificaciones_pendientes/${receiptId}`));
+
+            bot.sendMessage(chatId, `✅ Le has notificado a tu cliente que el pago es *${esReal ? 'REAL' : 'FALSO'}*.`, { parse_mode: 'Markdown' });
+
+            let veredictoMsg = `🔔 *VEREDICTO DE MASTER ADMIN*\n\nTu comprobante enviado a revisión ha sido analizado.\n\nResultado: `;
+            veredictoMsg += esReal ? `🟢 **ES UN PAGO REAL**.\nPuedes ir a tu bot y aprobarle el saldo al usuario.` : `🔴 **ES UN PAGO FALSO/EDITADO**.\nTe recomendamos rechazar el pago en tu bot.`;
+            
+            bot.sendMessage(reviewData.ownerTgId, veredictoMsg, { parse_mode: 'Markdown' });
+            return;
+        }
+
         if (data.startsWith('tgp|')) {
             const parts = data.split('|');
             const targetTgId = parts[1];
@@ -982,6 +1062,45 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText(`✅ *Administrador revocado.*\n\nEl ID \`${targetTgId}\` ya no tiene acceso al panel de control ni a comandos especiales.`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
             return;
         }
+    }
+
+    // ==========================================
+    // CALLBACKS DE ALQUILER (BaaS)
+    // ==========================================
+    if (data.startsWith('rent_buy|')) {
+        const targetUid = data.split('|')[1];
+        const currentBal = parseFloat(webUser.balance || 0);
+
+        if (currentBal < 10) {
+            return bot.sendMessage(chatId, `❌ Saldo insuficiente. Tienes $${currentBal.toFixed(2)} USD y necesitas $10.00 USD. Recarga saldo primero.`);
+        }
+
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+        
+        await update(ref(db), { [`users/${targetUid}/balance`]: currentBal - 10 });
+        
+        userStates[chatId] = { step: 'WAITING_FOR_BOT_TOKEN', data: {} };
+        bot.sendMessage(chatId, `✅ *Pago de $10 USD realizado con éxito.*\n\nVe a @BotFather en Telegram, crea un bot nuevo y **pégame el TOKEN** aquí abajo:\n\n_(Ejemplo: 71234567:AAHxj...)_`, { parse_mode: 'Markdown' });
+        return;
+    }
+
+    if (data.startsWith('rent_toggle|')) {
+        const targetUid = data.split('|')[1];
+        const rentSnap = await get(ref(db, `rented_bots/${targetUid}`));
+        const currentStatus = rentSnap.val().status;
+        const newStatus = currentStatus === 'active' ? 'paused' : 'active';
+        
+        await update(ref(db), { [`rented_bots/${targetUid}/status`]: newStatus });
+        
+        if (newStatus === 'paused' && botsActivos[targetUid]) {
+            botsActivos[targetUid].stopPolling();
+            delete botsActivos[targetUid];
+        } else if (newStatus === 'active') {
+            iniciarSubBot(targetUid, rentSnap.val().botToken, tgId);
+        }
+
+        bot.editMessageText(`✅ Estado cambiado a: ${newStatus === 'active' ? '🟢 Activo' : '🔴 Pausado'}`, { chat_id: chatId, message_id: query.message.message_id });
+        return;
     }
 
     if (adminData) {
@@ -1281,4 +1400,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log('🤖 Bot LUCK XIT PRO V2 (Sist. Completo y Transferencias) iniciado...');
+console.log('🤖 Bot LUCK XIT PRO V3 (BaaS Integrado) iniciado...');
