@@ -6,7 +6,7 @@ const sistemaRecargas = require('./recargas');
 // CONFIGURACIÓN
 const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ';
 const bot = new TelegramBot(token, { polling: true });
-const SUPER_ADMIN_ID = 7710633239; 
+const SUPER_ADMIN_ID = 7710633235; 
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
