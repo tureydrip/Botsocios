@@ -1,12 +1,12 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { initializeApp } = require('firebase/app');
 const { getDatabase, ref, get, update, push, set, remove } = require('firebase/database');
-const sistemaRecargas = require('./recargas'); // AQUÍ SE CONECTA EL NUEVO ARCHIVO
+const sistemaRecargas = require('./recargas');
 
 // CONFIGURACIÓN
 const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ';
 const bot = new TelegramBot(token, { polling: true });
-const SUPER_ADMIN_ID = 7710633235; // Tu ID intocable
+const SUPER_ADMIN_ID = 7710633235; 
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
@@ -34,9 +34,6 @@ const userKeyboard = {
     }
 };
 
-// ==========================================
-// FUNCIÓN DE AUDITORÍA (EL ESPÍA DE LUCK XIT)
-// ==========================================
 function notifySuperAdmin(adminUsername, adminTgId, action, details) {
     if (adminTgId === SUPER_ADMIN_ID) return; 
     
@@ -48,7 +45,6 @@ function notifySuperAdmin(adminUsername, adminTgId, action, details) {
     bot.sendMessage(SUPER_ADMIN_ID, msg, { parse_mode: 'Markdown' }).catch(() => {});
 }
 
-// Función para obtener los datos y permisos de un admin
 async function getAdminData(tgId) {
     if (tgId === SUPER_ADMIN_ID) {
         return {
@@ -63,7 +59,6 @@ async function getAdminData(tgId) {
     return null;
 }
 
-// Generador de teclado dinámico según permisos
 function buildAdminKeyboard(adminData) {
     const kb = [];
     let row = [];
@@ -96,7 +91,7 @@ function buildAdminKeyboard(adminData) {
     let bottomRow = [];
     if (adminData.isSuper) {
         bottomRow.push({ text: '👮 Gest. Admins' });
-        bottomRow.push({ text: '🌍 Gest. Países' }); // <-- NUEVO BOTÓN AGREGADO AQUÍ
+        bottomRow.push({ text: '🌍 Gest. Países' });
     }
     bottomRow.push({ text: '❌ Cancelar Acción' });
     kb.push(bottomRow);
@@ -104,7 +99,6 @@ function buildAdminKeyboard(adminData) {
     return { reply_markup: { keyboard: kb, resize_keyboard: true, is_persistent: true } };
 }
 
-// Función para generar el menú inline de gestión de un admin específico
 function buildAdminManagerInline(targetTgId, perms) {
     const p = (perm) => perms[perm] ? '🟢' : '🔴';
     return {
@@ -125,7 +119,6 @@ async function getAuthUser(telegramId) {
     return null;
 }
 
-// NUEVA FUNCIÓN: Menú interactivo de gestión por usuario
 async function sendUserManageMenu(chatId, targetUid, bot) {
     const uSnap = await get(ref(db, `users/${targetUid}`));
     if (!uSnap.exists()) return bot.sendMessage(chatId, '❌ Usuario no encontrado.');
@@ -214,7 +207,6 @@ bot.on('message', async (msg) => {
     const adminData = await getAdminData(tgId);
     const keyboard = adminData ? buildAdminKeyboard(adminData) : userKeyboard;
 
-    // Verificación de Baneos
     if (!adminData) {
         let isBanned = webUser.banned;
         if (webUser.banUntil && webUser.banUntil > Date.now()) {
@@ -242,13 +234,12 @@ bot.on('message', async (msg) => {
         return bot.sendMessage(chatId, '✅ Acción cancelada. ¿Qué deseas hacer ahora?', keyboard);
     }
 
-    // MANEJO DE FOTOS (Recargas y Reembolsos)
     if (msg.photo && userStates[chatId]) {
         const state = userStates[chatId];
         const fileId = msg.photo[msg.photo.length - 1].file_id; 
 
         if (state.step === 'WAITING_FOR_RECEIPT') {
-            return sistemaRecargas.recibirFotoComprobante(bot, chatId, tgId, fileId, state.data, keyboard, SUPER_ADMIN_ID, userStates);
+            return sistemaRecargas.recibirFotoComprobante(bot, db, chatId, tgId, fileId, state.data, keyboard, SUPER_ADMIN_ID, userStates);
         }
 
         if (state.step === 'WAITING_FOR_USER_REFUND_PROOF') {
@@ -795,11 +786,9 @@ bot.on('message', async (msg) => {
 
     if (adminData) {
 
-        // --- NUEVO COMANDO PARA GESTIONAR PAISES ---
         if (text === '🌍 Gest. Países' && adminData.isSuper) {
             return sistemaRecargas.menuPaisesAdmin(bot, db, chatId);
         }
-        // -------------------------------------------
         
         if (text === '👮 Gest. Admins' && adminData.isSuper) {
             userStates[chatId] = { step: 'WAITING_FOR_ADMIN_ID', data: {} };
@@ -997,12 +986,10 @@ bot.on('callback_query', async (query) => {
 
     if (adminData) {
 
-        // --- NUEVA FUNCIÓN: EL ADMIN APAGA/PRENDE PAÍSES DESDE EL MENÚ INLINE ---
         if (data.startsWith('toggle_pais|') && adminData.isSuper) {
             const countryCode = data.split('|')[1];
             return sistemaRecargas.togglePaisAdmin(bot, db, chatId, query.message.message_id, countryCode);
         }
-        // --------------------------------------------------------------------------
 
         if (data.startsWith('viewu|') && (adminData.isSuper || adminData.perms.stats)) {
             const filter = data.split('|')[1];
@@ -1197,13 +1184,13 @@ bot.on('callback_query', async (query) => {
         }
 
         if (data.startsWith('ok_rech|') && (adminData.isSuper || adminData.perms.balance)) {
-            const parts = data.split('|');
-            return sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, parts[1], parseFloat(parts[2]), parts[3], adminUsername, tgId, notifySuperAdmin);
+            const receiptId = data.split('|')[1];
+            return sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, receiptId, adminUsername, tgId, notifySuperAdmin);
         }
 
         if (data.startsWith('no_rech|') && (adminData.isSuper || adminData.perms.balance)) {
-            const parts = data.split('|');
-            return sistemaRecargas.rechazarRecarga(bot, chatId, query.message.message_id, parts[1], adminUsername, tgId, notifySuperAdmin);
+            const receiptId = data.split('|')[1];
+            return sistemaRecargas.rechazarRecarga(bot, db, chatId, query.message.message_id, receiptId, adminUsername, tgId, notifySuperAdmin);
         }
 
         if (data.startsWith('stock|') && (adminData.isSuper || adminData.perms.products)) {
@@ -1213,7 +1200,6 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // --- NUEVA FUNCIÓN: EL USUARIO SELECCIONA SU PAÍS DE RECARGA ---
     if (data.startsWith('sel_pais|')) {
         const countryCode = data.split('|')[1];
         if (userStates[chatId] && userStates[chatId].data) {
@@ -1221,11 +1207,12 @@ bot.on('callback_query', async (query) => {
         }
         return bot.sendMessage(chatId, '❌ Tu sesión de recarga ha expirado. Por favor, solicítala de nuevo.');
     }
-    // -----------------------------------------------------------------
 
     if (data.startsWith('send_receipt|')) {
-        const amountRequest = parseFloat(data.split('|')[1]);
-        return sistemaRecargas.solicitarComprobante(bot, db, chatId, webUid, amountRequest, userStates);
+        const parts = data.split('|');
+        const amountRequest = parseFloat(parts[1]);
+        const countryCode = parts[2];
+        return sistemaRecargas.solicitarComprobante(bot, db, chatId, webUid, amountRequest, countryCode, userStates);
     }
 
     if (data.startsWith('buy|')) {
