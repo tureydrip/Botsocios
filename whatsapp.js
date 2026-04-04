@@ -1,10 +1,11 @@
-const { makeWASocket, useMultiFileAuthState, delay } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, delay, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 
 const BOT_NUMBER = "573114998378"; 
 const ADMIN_NUMBER = "573142369516";
 
 let sock;
+let pidiendoCodigo = false; // 🛑 Bandera para evitar bucles rápidos
 
 async function iniciarWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
@@ -16,25 +17,44 @@ async function iniciarWhatsApp() {
         browser: ['LUCK XIT Bot', 'Chrome', '1.0.0']
     });
 
-    if (!sock.authState.creds.registered) {
+    // SISTEMA DE CÓDIGO DE EMPAREJAMIENTO (Frenado)
+    if (!sock.authState.creds.registered && !pidiendoCodigo) {
+        pidiendoCodigo = true; // Bloqueamos para que no pida más de 1 a la vez
         setTimeout(async () => {
-            let code = await sock.requestPairingCode(BOT_NUMBER);
-            code = code?.match(/.{1,4}/g)?.join("-") || code;
-            console.log(`\n=========================================`);
-            console.log(`🟢 CÓDIGO DE EMPAREJAMIENTO WHATSAPP: ${code}`);
-            console.log(`=========================================\n`);
-        }, 3000);
+            try {
+                let code = await sock.requestPairingCode(BOT_NUMBER);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                console.log(`\n=========================================`);
+                console.log(`🟢 CÓDIGO DE WHATSAPP: ${code}`);
+                console.log(`⏳ Ve con calma, este código no desaparecerá rápido.`);
+                console.log(`=========================================\n`);
+            } catch (error) {
+                console.log('Error pidiendo código:', error.message);
+                pidiendoCodigo = false; 
+            }
+        }, 4000);
     }
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
+        
         if (connection === 'close') {
-            console.log('🔴 Conexión de WhatsApp cerrada. Reconectando...');
-            iniciarWhatsApp();
+            const reason = lastDisconnect.error?.output?.statusCode;
+            
+            if (reason === DisconnectReason.loggedOut) {
+                console.log('🔴 Dispositivo desvinculado. Debes borrar la sesión y reiniciar.');
+            } else {
+                console.log('🔴 Conexión pausada. Reintentando en 10 segundos (para no borrar tu código)...');
+                // Retraso de 10 segundos para darte tiempo de escribirlo en tu celular
+                setTimeout(() => {
+                    iniciarWhatsApp();
+                }, 10000);
+            }
         } else if (connection === 'open') {
             console.log('✅ Bot de WhatsApp conectado exitosamente.');
+            pidiendoCodigo = false; // Se vinculó, reseteamos el sistema
         }
     });
 
