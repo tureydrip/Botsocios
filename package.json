@@ -1,13 +1,15 @@
 {
   "name": "luck-xit-bot",
   "version": "1.0.0",
-  "description": "Bot de Telegram para tienda VIP",
+  "description": "Bot de Telegram y WhatsApp para tienda VIP LUCK XIT",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "firebase": "^10.0.0",
-    "node-telegram-bot-api": "^0.65.0"
+    "node-telegram-bot-api": "^0.65.0",
+    "@whiskeysockets/baileys": "^6.6.0",
+    "pino": "^8.19.0"
   }
 }
