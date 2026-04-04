@@ -1,11 +1,12 @@
 const { makeWASocket, useMultiFileAuthState, delay, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 
+// Tu número configurado
 const BOT_NUMBER = "573114998378"; 
 const ADMIN_NUMBER = "573142369516";
 
 let sock;
-let pidiendoCodigo = false; // 🛑 Bandera para evitar buclepidos
+let generadorCodigos; // Variable para controlar el bucle de 20 segundos
 
 async function iniciarWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
@@ -13,26 +14,39 @@ async function iniciarWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' }),
+        logger: pino({ level: 'silent' }), // Silenciamos los logs excesivos de baileys
         browser: ['LUCK XIT Bot', 'Chrome', '1.0.0']
     });
 
-    // SISTEMA DE CÓDIGO DE EMPAREJAMIENTO (Frenado)
-    if (!sock.authState.creds.registered && !pidiendoCodigo) {
-        pidiendoCodigo = true; // Bloqueamos para que no pida más de 1 a la vez
-        setTimeout(async () => {
+    // SISTEMA DE CÓDIGO DE EMPAREJAMIENTO (Ciclo de 20 segundos)
+    if (!sock.authState.creds.registered) {
+        
+        const pedirCodigo = async () => {
+            // Si por alguna razón ya se registró, detenemos el generador
+            if (sock.authState.creds.registered) {
+                if (generadorCodigos) clearInterval(generadorCodigos);
+                return;
+            }
+
             try {
                 let code = await sock.requestPairingCode(BOT_NUMBER);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                 console.log(`\n=========================================`);
-                console.log(`🟢 CÓDIGO DE WHATSAPP: ${code}`);
-                console.log(`⏳ Ve con calma, este código no desaparecerá rápido.`);
+                console.log(`🟢 NUEVO CÓDIGO DE WHATSAPP: ${code}`);
+                console.log(`⏳ Tienes 20 segundos para ingresarlo...`);
                 console.log(`=========================================\n`);
             } catch (error) {
-                console.log('Error pidiendo código:', error.message);
-                pidiendoCodigo = false; 
+                // Si la librería tira un error temporal por pedir muy rápido, lo ignoramos y esperamos al siguiente ciclo
+                console.log('⏳ Esperando al siguiente ciclo para generar código...');
             }
-        }, 4000);
+        };
+
+        // Pedimos el primero a los 3 segundos
+        setTimeout(() => {
+            pedirCodigo();
+            // Luego, programamos que se repita exactamente cada 20.000 milisegundos (20s)
+            generadorCodigos = setInterval(pedirCodigo, 20000);
+        }, 3000);
     }
 
     sock.ev.on('creds.update', saveCreds);
@@ -41,23 +55,27 @@ async function iniciarWhatsApp() {
         const { connection, lastDisconnect } = update;
         
         if (connection === 'close') {
+            // Si se cierra la conexión, matamos el bucle para que no se sature la memoria de Railway
+            if (generadorCodigos) clearInterval(generadorCodigos); 
+            
             const reason = lastDisconnect.error?.output?.statusCode;
             
             if (reason === DisconnectReason.loggedOut) {
-                console.log('🔴 Dispositivo desvinculado. Debes borrar la sesión y reiniciar.');
+                console.log('🔴 Dispositivo desvinculado. Debes borrar la sesión en Railway y reiniciar.');
             } else {
-                console.log('🔴 Conexión pausada. Reintentando en 10 segundos (para no borrar tu código)...');
-                // Retraso de 10 segundos para darte tiempo de escribirlo en tu celular
+                console.log('🔴 Conexión pausada. El servidor reintentará conectarse en 5 segundos de forma segura...');
                 setTimeout(() => {
                     iniciarWhatsApp();
-                }, 10000);
+                }, 5000);
             }
         } else if (connection === 'open') {
-            console.log('✅ Bot de WhatsApp conectado exitosamente.');
-            pidiendoCodigo = false; // Se vinculó, reseteamos el sistema
+            // ¡Éxito! Matamos el bucle de los 20 segundos porque ya no lo necesitamos
+            if (generadorCodigos) clearInterval(generadorCodigos);
+            console.log('✅ Bot de WhatsApp de LUCK XIT conectado exitosamente.');
         }
     });
 
+    // LISTENER DE MENSAJES (Para el comando .agg del Admin)
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
@@ -79,7 +97,7 @@ async function iniciarWhatsApp() {
                 
                 await sock.sendPresenceUpdate('composing', remoteJid);
                 await delay(2500);
-                await sock.sendMessage(remoteJid, { text: `✅ *LUCK XIT ADMIN:*\n\nSe han registrado los miembros del grupo exitosamente.` }, { quoted: msg });
+                await sock.sendMessage(remoteJid, { text: `✅ *LUCK XIT ADMIN:*\n\nSe han registrado los miembros del grupo exitosamente en el sistema.` }, { quoted: msg });
                 
             } catch (error) {
                 console.log('Error en comando .agg:', error);
@@ -88,6 +106,7 @@ async function iniciarWhatsApp() {
     });
 }
 
+// FUNCIÓN PARA ENVIAR MENSAJES CON ANTI-BAN (Llamada desde Telegram)
 async function enviarNotificacionWA(numero, mensaje) {
     if (!sock) return console.log('WhatsApp no está listo.');
     try {
