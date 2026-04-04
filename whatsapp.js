@@ -5,7 +5,7 @@ const BOT_NUMBER = "573114998378";
 const ADMIN_NUMBER = "573142369516";
 
 let sock;
-let pidiendoCodigo = false; // 🛑 Bandera para evitar bucles rápidos
+let pidiendoCodigo = false; // 🛑 Bandera para evitar buclepidos
 
 async function iniciarWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
