@@ -1,7 +1,7 @@
 {
   "name": "luck-xit-bot",
   "version": "1.0.0",
-  "description": "Bot de Telegram y WhatsApp para tienda VIP LUCK XIT",
+  "description": "Bot de Telegram y WhatsApp para LUCK XIT",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
