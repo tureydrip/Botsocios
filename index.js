@@ -5,7 +5,7 @@ const sistemaRecargas = require('./recargas');
 const { enviarNotificacionWA } = require('./whatsapp'); // INTEGRACIÓN WHATSAPP
 
 // CONFIGURACIÓN MASTER
-const token = '8275295427:AAFc-U21od7ZWdtQU-62U1mJOSJqFYFZ-IQ';
+const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
 
