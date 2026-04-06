@@ -1,4 +1,4 @@
-const { makeWASocket, useMultiFileAuthState, delay, DisconnectReason } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, delay, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 
 const BOT_NUMBER = "573114998378"; 
@@ -14,24 +14,29 @@ async function iniciarWhatsApp() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        // Usar la configuración estándar de Ubuntu evita que WhatsApp rechace la vinculación
-        browser: ['Ubuntu', 'Chrome', '20.0.04'] 
+        // LA CLAVE ESTÁ AQUÍ: Usar el objeto Browsers nativo de Baileys
+        // Esto le da a WhatsApp la firma exacta que requiere para que el código sea válido.
+        browser: Browsers.macOS('Desktop'),
+        syncFullHistory: false // Evita sobrecargas al vincular por primera vez
     });
 
-    // SISTEMA DE CÓDIGO DE EMPAREJAMIENTO (Sin límite de tiempo)
+    // SISTEMA DE CÓDIGO DE EMPAREJAMIENTO
     if (!sock.authState.creds.registered && !codigoPedido) {
-        codigoPedido = true; // Bloqueamos para que no pida más códigos y no invalide el actual
+        codigoPedido = true; // Bloqueamos para que no pida más códigos
         
+        // Limpiamos el número de cualquier espacio o símbolo "+" residual que pueda dañar la petición
+        const numeroLimpio = BOT_NUMBER.replace(/[^0-9]/g, '');
+
         setTimeout(async () => {
             try {
-                let code = await sock.requestPairingCode(BOT_NUMBER);
+                let code = await sock.requestPairingCode(numeroLimpio);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                 console.log(`\n=========================================`);
                 console.log(`🟢 CÓDIGO DE WHATSAPP: ${code}`);
-                console.log(`⏳ Ve a Dispositivos Vinculados y ponlo con calma. NO SE VA A BORRAR NI A CAMBIAR.`);
+                console.log(`⏳ Ve a Dispositivos Vinculados > "Vincular con el número de teléfono".`);
                 console.log(`=========================================\n`);
             } catch (error) {
-                console.log('Error pidiendo código:', error.message);
+                console.log('🔴 Error pidiendo código:', error.message);
                 codigoPedido = false; // Si falla, permitimos que intente de nuevo
             }
         }, 3000);
@@ -47,9 +52,9 @@ async function iniciarWhatsApp() {
             
             if (reason === DisconnectReason.loggedOut) {
                 console.log('🔴 Dispositivo desvinculado por WhatsApp. Borra la carpeta de sesión.');
+                codigoPedido = false; 
             } else {
-                console.log('🔴 Conexión pausada. Reconectando de forma segura...');
-                codigoPedido = false; // Reseteamos por si necesita pedir código de nuevo al reiniciar
+                console.log(`🔴 Conexión caída (Código: ${reason}). Reconectando de forma segura...`);
                 setTimeout(() => {
                     iniciarWhatsApp();
                 }, 5000);
@@ -83,22 +88,25 @@ async function iniciarWhatsApp() {
                 await sock.sendMessage(remoteJid, { text: `✅ *LUCK XIT ADMIN:*\n\nSe han registrado los miembros del grupo exitosamente.` }, { quoted: msg });
                 
             } catch (error) {
-                console.log('Error en comando .agg:', error);
+                console.log('🔴 Error en comando .agg:', error.message);
             }
         }
     });
 }
 
 async function enviarNotificacionWA(numero, mensaje) {
-    if (!sock) return console.log('WhatsApp no está listo.');
+    if (!sock) return console.log('🔴 WhatsApp no está listo.');
     try {
-        const jid = `${numero}@s.whatsapp.net`;
+        // Aseguramos de limpiar el número destino también
+        const numeroLimpio = numero.replace(/[^0-9]/g, '');
+        const jid = `${numeroLimpio}@s.whatsapp.net`;
+        
         await sock.sendPresenceUpdate('composing', jid);
         const typingTime = Math.floor(Math.random() * (4000 - 2000 + 1) + 2000);
         await delay(typingTime); 
         await sock.sendMessage(jid, { text: mensaje });
     } catch (error) {
-        console.log(`No se pudo enviar mensaje a ${numero}:`, error);
+        console.log(`🔴 No se pudo enviar mensaje a ${numero}:`, error.message);
     }
 }
 
