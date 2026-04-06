@@ -1,12 +1,10 @@
 const { makeWASocket, useMultiFileAuthState, delay, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const fs = require('fs'); // Importamos 'fs' para poder borrar carpetas corruptas automáticamente
+const fs = require('fs'); 
 
 const BOT_NUMBER = "573114998378"; 
 const ADMIN_NUMBER = "573142369516";
-
-// NUEVO NOMBRE DE CARPETA: Esto fuerza a Railway a ignorar las sesiones viejas
-const DIR_SESION = 'auth_luck_xit_nueva'; 
+const DIR_SESION = 'auth_luck_xit2_limpia'; // Nueva carpeta virgen
 
 let sock;
 let codigoPedido = false;
@@ -17,7 +15,7 @@ async function iniciarWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' }),
+        logger: pino({ level: 'silent' }), // Silencia logs innecesarios
         browser: ['Ubuntu', 'Chrome', '20.0.04']
     });
 
@@ -25,7 +23,6 @@ async function iniciarWhatsApp() {
 
     if (!sock.authState.creds.registered && !codigoPedido) {
         codigoPedido = true;
-        // Damos 5 segundos para que la conexión con Meta sea estable antes de pedir código
         setTimeout(async () => {
             try {
                 const numeroLimpio = BOT_NUMBER.replace(/[^0-9]/g, '');
@@ -37,8 +34,8 @@ async function iniciarWhatsApp() {
                 console.log(`🟢 CÓDIGO DE VINCULACIÓN: ${code}`);
                 console.log(`=========================================\n`);
             } catch (error) {
-                console.log('Error pidiendo código con Meta. Reintentando...', error.message);
-                codigoPedido = false; 
+                console.log('🔴 Error pidiendo código con Meta. Reiniciando servidor para limpiar memoria...');
+                process.exit(1); // 🛑 RAILWAY REINICIARÁ LA APP LIMPIA
             }
         }, 5000); 
     }
@@ -49,26 +46,22 @@ async function iniciarWhatsApp() {
         if (connection === 'close') {
             const reason = lastDisconnect.error?.output?.statusCode;
             
-            // SISTEMA AUTOLIMPIANTE: Si WhatsApp rechaza, borra todo y empieza de cero
             if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403 || reason === 405) {
-                console.log('🔴 Sesión corrupta o rechazada por WhatsApp. Destruyendo basura vieja...');
+                console.log('🔴 Sesión rechazada por WhatsApp. Borrando basura...');
                 if (fs.existsSync(DIR_SESION)) {
                     fs.rmSync(DIR_SESION, { recursive: true, force: true });
                 }
-                codigoPedido = false;
-                console.log('🔄 Reiniciando con una sesión 100% nueva...');
-                setTimeout(iniciarWhatsApp, 3000);
-            } else {
-                console.log('🔴 Reconectando...');
-                codigoPedido = false; 
-                setTimeout(iniciarWhatsApp, 5000);
             }
+            
+            console.log('🔄 Desconectado. Apagando proceso para que Railway lo reinicie fresco...');
+            // 🛑 EN LUGAR DE BUCLES, APAGAMOS EL PROCESO. RAILWAY LO PRENDE AUTOMÁTICAMENTE EN 3 SEGUNDOS.
+            process.exit(1); 
+            
         } else if (connection === 'open') {
             console.log('✅ Bot LUCK XIT conectado a WhatsApp correctamente.');
         }
     });
 
-    // EVENTO DE MENSAJES PARA COMANDO .agg
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
@@ -99,9 +92,8 @@ async function iniciarWhatsApp() {
     });
 }
 
-// FUNCIÓN PARA ENVIAR NOTIFICACIONES DESDE TELEGRAM
 async function enviarNotificacionWA(numero, mensaje) {
-    if (!sock) return console.log('WhatsApp no está listo.');
+    if (!sock) return;
     try {
         const jid = `${numero}@s.whatsapp.net`;
         await sock.sendPresenceUpdate('composing', jid);
@@ -109,7 +101,7 @@ async function enviarNotificacionWA(numero, mensaje) {
         await delay(typingTime); 
         await sock.sendMessage(jid, { text: mensaje });
     } catch (error) {
-        console.log(`No se pudo enviar mensaje a ${numero}:`, error);
+        console.log(`No se pudo enviar mensaje a ${numero}`);
     }
 }
 
