@@ -4,7 +4,7 @@ const fs = require('fs');
 
 const BOT_NUMBER = "573114998378"; 
 const ADMIN_NUMBER = "573142369516";
-const DIR_SESION = 'auth_luck_xit2_limpia'; // Nueva carpeta virgen
+const DIR_SESION = 'auth_luck_xit_limpia'; 
 
 let sock;
 let codigoPedido = false;
@@ -15,14 +15,16 @@ async function iniciarWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' }), // Silencia logs innecesarios
-        browser: ['Ubuntu', 'Chrome', '20.0.04']
+        logger: pino({ level: 'silent' }),
+        // 🚨 EL TRUCO ESTÁ AQUÍ: Disfrazamos el bot como una Mac para saltar el bloqueo de Meta
+        browser: ['Mac OS', 'Safari', '14.0.0'] 
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     if (!sock.authState.creds.registered && !codigoPedido) {
         codigoPedido = true;
+        // Esperamos 8 segundos para que el servidor de WhatsApp no sienta que lo estamos atacando
         setTimeout(async () => {
             try {
                 const numeroLimpio = BOT_NUMBER.replace(/[^0-9]/g, '');
@@ -34,10 +36,10 @@ async function iniciarWhatsApp() {
                 console.log(`🟢 CÓDIGO DE VINCULACIÓN: ${code}`);
                 console.log(`=========================================\n`);
             } catch (error) {
-                console.log('🔴 Error pidiendo código con Meta. Reiniciando servidor para limpiar memoria...');
-                process.exit(1); // 🛑 RAILWAY REINICIARÁ LA APP LIMPIA
+                console.log('🔴 Error pidiendo código. Reiniciando de forma segura...');
+                process.exit(1); 
             }
-        }, 5000); 
+        }, 8000); 
     }
 
     sock.ev.on('connection.update', (update) => {
@@ -47,14 +49,13 @@ async function iniciarWhatsApp() {
             const reason = lastDisconnect.error?.output?.statusCode;
             
             if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403 || reason === 405) {
-                console.log('🔴 Sesión rechazada por WhatsApp. Borrando basura...');
+                console.log('🔴 Sesión rechazada por WhatsApp. Borrando basura para el siguiente intento...');
                 if (fs.existsSync(DIR_SESION)) {
                     fs.rmSync(DIR_SESION, { recursive: true, force: true });
                 }
             }
             
-            console.log('🔄 Desconectado. Apagando proceso para que Railway lo reinicie fresco...');
-            // 🛑 EN LUGAR DE BUCLES, APAGAMOS EL PROCESO. RAILWAY LO PRENDE AUTOMÁTICAMENTE EN 3 SEGUNDOS.
+            console.log('🔄 Reiniciando proceso para evitar colapso de memoria...');
             process.exit(1); 
             
         } else if (connection === 'open') {
@@ -62,6 +63,7 @@ async function iniciarWhatsApp() {
         }
     });
 
+    // (El resto del código del comando .agg se mantiene igual...)
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
