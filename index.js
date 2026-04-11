@@ -2,7 +2,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const { initializeApp } = require('firebase/app');
 const { getDatabase, ref, get, update, push, set, remove } = require('firebase/database');
 const sistemaRecargas = require('./recargas');
-const { enviarNotificacionWA } = require('./whatsapp'); // INTEGRACIÓN WHATSAPP
 
 // CONFIGURACIÓN MASTER
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
@@ -123,7 +122,7 @@ const userKeyboard = {
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
             [{ text: '💳 Recargas' }, { text: '🔄 Solicitar Reembolso' }],
             [{ text: '🎟️ Canjear Cupón' }, { text: '💸 Transferir Saldo' }],
-            [{ text: '🤖 Mi Bot (Alquiler)' }, { text: '📱 Vincular WhatsApp' }] 
+            [{ text: '🤖 Mi Bot (Alquiler)' }, { text: '🔄 Resetear Key' }] 
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -304,29 +303,47 @@ bot.on('message', async (msg) => {
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
-        if (state.step === 'WAITING_FOR_WA_NUMBER') {
-            const numero = text.replace(/\D/g, ''); 
-            if (numero.length < 10) return bot.sendMessage(chatId, '❌ Número inválido. Asegúrate de incluir el código de país.');
-            
-            const codigoVerificacion = Math.floor(10000 + Math.random() * 90000).toString();
-            state.step = 'WAITING_FOR_WA_CODE';
-            state.data = { numeroWA: numero, codigoValidacion: codigoVerificacion };
+        // LÓGICA DE RESET DE KEY AÑADIDA
+        if (state.step === 'WAITING_FOR_RESET_KEY') {
+            const searchKey = text.trim();
+            bot.sendMessage(chatId, '⏳ Verificando tu Key en el sistema...');
 
-            bot.sendMessage(chatId, '⏳ Enviando código de seguridad a tu WhatsApp...', { parse_mode: 'Markdown' });
-            
-            enviarNotificacionWA(numero, `🔐 *LUCK XIT - SEGURIDAD*\n\nTu código de vinculación para Telegram es: *${codigoVerificacion}*\n\nSi no solicitaste esto, ignora este mensaje.`);
+            let found = false;
+            let foundHistId = null;
+            let keyData = null;
 
-            return bot.sendMessage(chatId, `✅ *Código enviado.*\n\nRevisa tu WhatsApp (+${numero}) y escribe el código de 5 dígitos aquí abajo:`, { parse_mode: 'Markdown' });
-        }
-
-        if (state.step === 'WAITING_FOR_WA_CODE') {
-            if (text.trim() === state.data.codigoValidacion) {
-                await update(ref(db), { [`users/${webUid}/whatsapp`]: state.data.numeroWA });
-                userStates[chatId] = null;
-                return bot.sendMessage(chatId, '🎉 *¡WhatsApp vinculado exitosamente!*\n\nAhora LUCK XIT te notificará por allá sobre tu saldo y recargas.', { parse_mode: 'Markdown', ...keyboard });
-            } else {
-                return bot.sendMessage(chatId, '❌ Código incorrecto. Intenta de nuevo o escribe "❌ Cancelar Acción".');
+            if (webUser.history) {
+                Object.keys(webUser.history).forEach(histId => {
+                    if (webUser.history[histId].key.trim() === searchKey) {
+                        found = true;
+                        foundHistId = histId;
+                        keyData = webUser.history[histId];
+                    }
+                });
             }
+
+            if (!found) {
+                userStates[chatId] = null;
+                return bot.sendMessage(chatId, '❌ No se encontró esta Key en tu historial de compras.', keyboard);
+            }
+
+            const lastReset = keyData.lastReset || 0;
+            const hoursPassed = (Date.now() - lastReset) / (1000 * 60 * 60);
+
+            if (hoursPassed < 7 && lastReset !== 0) {
+                const remaining = (7 - hoursPassed).toFixed(1);
+                userStates[chatId] = null;
+                return bot.sendMessage(chatId, `⏳ *LÍMITE ALCANZADO*\n\nYa reseteaste esta key recientemente.\nDebes esperar **${remaining} horas** para volver a hacerlo.`, { parse_mode: 'Markdown', ...keyboard });
+            }
+
+            // Aquí se aplica el reset guardando el tiempo en Firebase
+            // Puedes agregar actualizaciones a nodos globales si las licencias se validan en otra ruta.
+            const updates = {};
+            updates[`users/${webUid}/history/${foundHistId}/lastReset`] = Date.now();
+            
+            await update(ref(db), updates);
+            userStates[chatId] = null;
+            return bot.sendMessage(chatId, '✅ *Key reseteada con éxito.*\n\nYa puedes usarla en un nuevo dispositivo.', { parse_mode: 'Markdown', ...keyboard });
         }
 
         if (state.step === 'WAITING_FOR_BOT_TOKEN') {
@@ -398,13 +415,11 @@ bot.on('message', async (msg) => {
             const usersSnap = await get(ref(db, 'users'));
             let targetUid = null;
             let targetBal = 0;
-            let targetUserWA = null;
 
             usersSnap.forEach(u => {
                 if (u.val().username === state.data.targetUser) {
                     targetUid = u.key;
                     targetBal = parseFloat(u.val().balance || 0);
-                    targetUserWA = u.val().whatsapp;
                 }
             });
 
@@ -428,9 +443,6 @@ bot.on('message', async (msg) => {
             if (targetTgId) {
                 bot.sendMessage(targetTgId, `💸 *¡TRANSFERENCIA RECIBIDA!*\n\nEl usuario *${webUser.username}* te ha enviado *$${amount} USD*.\n💰 Nuevo saldo: *$${(targetBal + amount).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
             }
-            if (targetUserWA) {
-                enviarNotificacionWA(targetUserWA, `💸 *TRANSFERENCIA RECIBIDA*\n\nEl usuario *${webUser.username}* te ha enviado saldo.\n\n💵 *Monto:* $${amount} USD\n💎 *Saldo Actual:* $${(targetBal + amount).toFixed(2)} USD`);
-            }
             userStates[chatId] = null;
             return;
         }
@@ -453,10 +465,6 @@ bot.on('message', async (msg) => {
                 const currentBal = parseFloat(uSnap.val().balance || 0);
                 await update(ref(db), { [`users/${state.data.targetUid}/balance`]: currentBal + amt });
                 bot.sendMessage(chatId, `✅ Se agregaron $${amt} al usuario ${uSnap.val().username}. Nuevo saldo: $${(currentBal + amt).toFixed(2)}`, keyboard);
-                
-                if (uSnap.val().whatsapp) {
-                    enviarNotificacionWA(uSnap.val().whatsapp, `💰 *RECARGA APROBADA*\n\nSe han depositado *$${amt} USD* a tu cuenta LUCK XIT.\n💎 *Saldo Actual:* $${(currentBal + amt).toFixed(2)} USD`);
-                }
                 userStates[chatId] = null;
                 return;
             }
@@ -469,10 +477,6 @@ bot.on('message', async (msg) => {
                 const newBal = currentBal - amt < 0 ? 0 : currentBal - amt;
                 await update(ref(db), { [`users/${state.data.targetUid}/balance`]: newBal });
                 bot.sendMessage(chatId, `✅ Se quitaron $${amt} al usuario ${uSnap.val().username}. Nuevo saldo: $${newBal.toFixed(2)}`, keyboard);
-                
-                if (uSnap.val().whatsapp) {
-                    enviarNotificacionWA(uSnap.val().whatsapp, `📉 *SALDO DEBITADO*\n\nSe te descontaron *$${amt} USD* de tu cuenta.\n💎 *Saldo Actual:* $${newBal.toFixed(2)} USD`);
-                }
                 userStates[chatId] = null;
                 return;
             }
@@ -660,13 +664,12 @@ bot.on('message', async (msg) => {
                 
                 bot.sendMessage(chatId, '⚙️ Buscando usuario...');
                 const usersSnap = await get(ref(db, 'users'));
-                let foundUid = null; let currentBal = 0; let targetWA = null;
+                let foundUid = null; let currentBal = 0; 
 
                 usersSnap.forEach(child => {
                     if (child.val().username === state.data.targetUser) { 
                         foundUid = child.key; 
                         currentBal = parseFloat(child.val().balance || 0); 
-                        targetWA = child.val().whatsapp;
                     }
                 });
 
@@ -691,10 +694,6 @@ bot.on('message', async (msg) => {
 
                     if (targetTgId) {
                         bot.sendMessage(targetTgId, `🎉 Un administrador LUCK XIT te ha depositado: *$${amount} USD* de saldo.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
-                    }
-
-                    if (targetWA) {
-                        enviarNotificacionWA(targetWA, `💰 *RECARGA APROBADA*\n\nUn administrador te depositó *$${amount} USD*.\n💎 *Saldo Actual:* $${nuevoSaldo.toFixed(2)} USD`);
                     }
                     
                     notifySuperAdmin(webUser.username, tgId, 'Añadió Saldo Manual', `Monto: $${amount} USD al usuario: ${state.data.targetUser}`);
@@ -812,9 +811,9 @@ bot.on('message', async (msg) => {
         }
     } 
 
-    if (text === '📱 Vincular WhatsApp') {
-        userStates[chatId] = { step: 'WAITING_FOR_WA_NUMBER', data: {} };
-        return bot.sendMessage(chatId, '📱 *VINCULACIÓN OBLIGATORIA*\n\nPara recibir alertas de saldo, escribe tu número de WhatsApp con código de país.\n\n_Ejemplo: 573210000000_', { parse_mode: 'Markdown' });
+    if (text === '🔄 Resetear Key') {
+        userStates[chatId] = { step: 'WAITING_FOR_RESET_KEY', data: {} };
+        return bot.sendMessage(chatId, '🔄 *RESETEO DE KEY*\n\nEnvía la **Key** que deseas resetear para liberar tu dispositivo.\n\n_Nota: Solo puedes resetear tu Key 1 vez cada 7 horas._', { parse_mode: 'Markdown' });
     }
 
     if (text === '🤖 Mi Bot (Alquiler)') {
@@ -1313,10 +1312,6 @@ bot.on('callback_query', async (query) => {
                         bot.sendMessage(targetTgId, `🔄 *REEMBOLSO APROBADO*\n\nSe te ha devuelto el dinero de la key de *${compra.product}*.\n💰 Se añadieron *$${price} USD* a tu saldo.\n💳 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
                     }
 
-                    if (userData.whatsapp) {
-                        enviarNotificacionWA(userData.whatsapp, `🔄 *REEMBOLSO APROBADO*\n\nTe hemos devuelto el dinero de tu compra fallida.\n\n💵 *Añadido:* $${price} USD\n💎 *Saldo Actual:* $${nuevoSaldo.toFixed(2)} USD`);
-                    }
-                    
                     notifySuperAdmin(adminUsername, tgId, 'Aprobó Reembolso', `Devolvió $${price} USD a la cuenta de ${userData.username}`);
 
                 } else {
@@ -1440,4 +1435,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log('🤖 Bot LUCK XIT PRO V3 (WhatsApp + Telegram) iniciado...');
+console.log('🤖 Bot LUCK XIT PRO V3 (Solo Telegram) iniciado...');
