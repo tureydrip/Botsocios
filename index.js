@@ -19,7 +19,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// --- SISTEMA DE RANGOS VIP DINÁMICO ---
+// --- SISTEMA DE RANGOS VIP DINÁMICO (FIJO USD) ---
 async function getRanks(db) {
     const snap = await get(ref(db, 'settings/ranks'));
     if (snap.exists()) {
@@ -28,11 +28,11 @@ async function getRanks(db) {
                      .sort((a, b) => b.minGastado - a.minGastado);
     } else {
         const defaultRanks = {
-            elite: { nombre: '🌟 Élite', minGastado: 200, descuento: 25 },
-            deluxe: { nombre: '🔥 Deluxe', minGastado: 150, descuento: 20 },
-            diamante: { nombre: '💎 Diamante', minGastado: 100, descuento: 15 },
-            premium: { nombre: '✨ Premium', minGastado: 50, descuento: 10 },
-            vip: { nombre: '🎫 VIP', minGastado: 10, descuento: 5 },
+            elite: { nombre: '🌟 Élite', minGastado: 200, descuento: 2.50 },
+            deluxe: { nombre: '🔥 Deluxe', minGastado: 150, descuento: 2.00 },
+            diamante: { nombre: '💎 Diamante', minGastado: 100, descuento: 1.50 },
+            premium: { nombre: '✨ Premium', minGastado: 50, descuento: 1.00 },
+            vip: { nombre: '🎫 VIP', minGastado: 10, descuento: 0.50 },
             miembro: { nombre: '👤 Miembro', minGastado: 0, descuento: 0 }
         };
         await set(ref(db, 'settings/ranks'), defaultRanks);
@@ -55,6 +55,47 @@ async function obtenerRango(db, totalGastado) {
     const rangos = await getRanks(db);
     return rangos.find(r => totalGastado >= r.minGastado) || rangos[rangos.length - 1];
 }
+
+// --- SISTEMA DE RECOMPENSA POR REFERIDOS ---
+async function verificarBonoReferido(db, bot, targetUid, amountAdded) {
+    const uSnap = await get(ref(db, `users/${targetUid}`));
+    if (!uSnap.exists()) return;
+    const user = uSnap.val();
+    
+    if (user.referredBy && !user.referralRewarded) {
+        let totalRecharged = amountAdded; 
+        if (user.recharges) {
+            Object.values(user.recharges).forEach(r => totalRecharged += parseFloat(r.amount || 0));
+        }
+        
+        if (totalRecharged >= 5 || amountAdded >= 5) {
+            const inviterCode = user.referredBy;
+            const codeSnap = await get(ref(db, `referral_codes/${inviterCode}`));
+            
+            if (codeSnap.exists()) {
+                const inviterUid = codeSnap.val();
+                const inviterSnap = await get(ref(db, `users/${inviterUid}`));
+                
+                if (inviterSnap.exists()) {
+                    const inviterBal = parseFloat(inviterSnap.val().balance || 0);
+                    
+                    await update(ref(db), {
+                        [`users/${inviterUid}/balance`]: inviterBal + 2,
+                        [`users/${targetUid}/referralRewarded`]: true
+                    });
+                    
+                    const tgAuthSnap = await get(ref(db, `telegram_auth`));
+                    let inviterTgId = null;
+                    tgAuthSnap.forEach(child => { if (child.val() === inviterUid) inviterTgId = child.key; });
+                    
+                    if (inviterTgId) {
+                        bot.sendMessage(inviterTgId, `🎉 *¡BONO DE REFERIDO!*\n\nTu referido *${user.username}* acaba de realizar su primera recarga de $5 USD o más.\n🎁 Acabas de recibir *$2.00 USD* de saldo gratis.\n💰 Tu nuevo saldo es: *$${(inviterBal + 2).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
+                    }
+                }
+            }
+        }
+    }
+}
 // -------------------------------------
 
 const userStates = {}; 
@@ -63,9 +104,9 @@ const userKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
-            [{ text: '💳 Recargas' }, { text: '🔄 Solicitar Reembolso' }],
+            [{ text: '💳 Recargas' }, { text: '🤝 Referidos' }],
             [{ text: '🎟️ Canjear Cupón' }, { text: '💸 Transferir Saldo' }],
-            [{ text: '🔄 Resetear Key' }] 
+            [{ text: '🔄 Resetear Key' }, { text: '🔄 Solicitar Reembolso' }] 
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -93,7 +134,7 @@ function buildAdminKeyboard(adminData) {
         if (adminData.isSuper || adminData.perms[perm]) { row.push({ text }); if (row.length === 3) { kb.push(row); row = []; } }
     };
     
-    addBtn('📦 Crear Producto', 'products'); addBtn('📝 Editar Producto', 'products'); addBtn('🗑️ Eliminar Producto', 'products');
+    addBtn('📦 Crear Producto', '📝 Editar Producto', '🗑️ Eliminar Producto');
     addBtn('🔑 Añadir Stock', 'products'); addBtn('💰 Añadir Saldo', 'balance'); addBtn('📢 Mensaje Global', 'broadcast');
     addBtn('🔄 Revisar Reembolsos', 'refunds'); addBtn('🎟️ Crear Cupón', 'coupons'); addBtn('📊 Estadísticas', 'stats');
     addBtn('📋 Ver Usuarios', 'stats'); addBtn('🔨 Gest. Usuarios', 'users'); addBtn('🛠️ Mantenimiento', 'maintenance');
@@ -153,9 +194,10 @@ async function sendUserManageMenu(chatId, targetUid, bot) {
     bot.sendMessage(chatId, msgInfo, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
 }
 
-bot.onText(/\/start/, async (msg) => {
+bot.onText(/\/start(?: (.*))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
+    const refCodeParam = match[1] ? match[1].trim().toUpperCase() : null;
     userStates[chatId] = null; 
 
     const webUid = await getAuthUser(tgId);
@@ -167,6 +209,14 @@ bot.onText(/\/start/, async (msg) => {
     const webUser = userSnap.val();
     if (!webUser) return bot.sendMessage(chatId, '⚠️ *ERROR CRÍTICO*\n\nTu cuenta web fue eliminada o no se encuentra en la base de datos. Contacta a soporte.', { parse_mode: 'Markdown' });
 
+    if (refCodeParam && !webUser.referredBy && webUser.referralCode !== refCodeParam) {
+        const codeSnap = await get(ref(db, `referral_codes/${refCodeParam}`));
+        if (codeSnap.exists() && codeSnap.val() !== webUid) {
+            await update(ref(db), { [`users/${webUid}/referredBy`]: refCodeParam });
+            bot.sendMessage(chatId, `🤝 *¡CÓDIGO ACEPTADO!*\nHas sido invitado con el código \`${refCodeParam}\`. Cuando realices tu primera recarga de $5 USD estarás apoyando a quien te invitó.`, { parse_mode: 'Markdown' });
+        }
+    }
+
     const adminData = await getAdminData(tgId);
     const keyboard = adminData ? buildAdminKeyboard(adminData) : userKeyboard;
     
@@ -177,7 +227,7 @@ bot.onText(/\/start/, async (msg) => {
 });
 
 bot.on('message', async (msg) => {
-    if (msg.text === '/start') return;
+    if (msg.text && msg.text.startsWith('/start')) return;
     
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
@@ -247,6 +297,21 @@ bot.on('message', async (msg) => {
     if (userStates[chatId]) {
         const state = userStates[chatId];
 
+        if (state.step === 'WAITING_FOR_REF_CODE') {
+            const inputCode = text.trim().toUpperCase();
+            if (inputCode === webUser.referralCode) {
+                return bot.sendMessage(chatId, '❌ No puedes usar tu propio código.');
+            }
+            const codeSnap = await get(ref(db, `referral_codes/${inputCode}`));
+            if (!codeSnap.exists()) {
+                return bot.sendMessage(chatId, '❌ El código es inválido o no existe.');
+            }
+            
+            await update(ref(db), { [`users/${webUid}/referredBy`]: inputCode });
+            userStates[chatId] = null;
+            return bot.sendMessage(chatId, `✅ *¡Código enlazado con éxito!*\nHas sido invitado por el código \`${inputCode}\`.`, { parse_mode: 'Markdown', ...keyboard });
+        }
+
         if (state.step === 'EDIT_RANK_MIN' && (adminData.isSuper || adminData.perms.products)) {
             const min = parseFloat(text);
             if (isNaN(min) || min < 0) return bot.sendMessage(chatId, '❌ Valor inválido. Ingresa un número (ej: 150).');
@@ -258,9 +323,9 @@ bot.on('message', async (msg) => {
 
         if (state.step === 'EDIT_RANK_DESC' && (adminData.isSuper || adminData.perms.products)) {
             const desc = parseFloat(text);
-            if (isNaN(desc) || desc < 0 || desc > 100) return bot.sendMessage(chatId, '❌ Valor inválido. Ingresa un número entre 0 y 100.');
+            if (isNaN(desc) || desc < 0) return bot.sendMessage(chatId, '❌ Valor inválido. Ingresa un número mayor o igual a 0.');
             await update(ref(db), { [`settings/ranks/${state.data.rankId}/descuento`]: desc });
-            bot.sendMessage(chatId, '✅ Porcentaje de descuento actualizado correctamente.', keyboard);
+            bot.sendMessage(chatId, '✅ Descuento fijo en USD actualizado correctamente.', keyboard);
             userStates[chatId] = null;
             return;
         }
@@ -405,6 +470,9 @@ bot.on('message', async (msg) => {
                 const currentBal = parseFloat(uSnap.val().balance || 0);
                 await update(ref(db), { [`users/${state.data.targetUid}/balance`]: currentBal + amt });
                 bot.sendMessage(chatId, `✅ Se agregaron $${amt} al usuario ${uSnap.val().username}. Nuevo saldo: $${(currentBal + amt).toFixed(2)}`, keyboard);
+                
+                await verificarBonoReferido(db, bot, state.data.targetUid, amt);
+                
                 userStates[chatId] = null;
                 return;
             }
@@ -637,6 +705,7 @@ bot.on('message', async (msg) => {
                     }
                     
                     notifySuperAdmin(webUser.username, tgId, 'Añadió Saldo Manual', `Monto: $${amount} USD al usuario: ${state.data.targetUser}`);
+                    await verificarBonoReferido(db, bot, foundUid, amount);
 
                 } else {
                     bot.editMessageText(`❌ Usuario no encontrado.`, { chat_id: chatId, message_id: waitMsg.message_id });
@@ -749,6 +818,35 @@ bot.on('message', async (msg) => {
         }
     } 
 
+    if (text === '🤝 Referidos') {
+        let miCodigo = webUser.referralCode;
+        
+        if (!miCodigo) {
+            miCodigo = 'LUCK-' + Math.random().toString(36).substring(2, 7).toUpperCase();
+            await update(ref(db), { 
+                [`users/${webUid}/referralCode`]: miCodigo,
+                [`referral_codes/${miCodigo}`]: webUid
+            });
+        }
+        
+        const botInfo = await bot.getMe();
+        
+        let msgRef = `🤝 *SISTEMA DE REFERIDOS LUCK XIT*\n\n` +
+                     `¡Invita a tus amigos y gana saldo gratis para comprar keys! Por cada persona que se una con tu enlace y recargue **$5 USD** por primera vez, ¡tú recibirás **$2 USD** en automático!\n\n` +
+                     `🎟️ *Tu Código:* \`${miCodigo}\`\n` +
+                     `🔗 *Tu Enlace de Invitación:*\n` +
+                     `\`https://t.me/${botInfo.username}?start=${miCodigo}\``;
+        
+        if (webUser.referredBy) {
+            msgRef += `\n\n👤 _Fuiste invitado al bot por el código: ${webUser.referredBy}_`;
+        } else {
+            userStates[chatId] = { step: 'WAITING_FOR_REF_CODE', data: {} };
+            msgRef += `\n\n✍️ *¿Alguien te invitó a LUCK XIT?*\nEscribe su código de referido ahora mismo para apoyarlo (o usa los botones abajo para salir).`;
+        }
+        
+        return bot.sendMessage(chatId, msgRef, { parse_mode: 'Markdown' });
+    }
+
     if (text === '🔄 Resetear Key') {
         userStates[chatId] = { step: 'WAITING_FOR_RESET_KEY', data: {} };
         return bot.sendMessage(chatId, '🔄 *RESETEO DE KEY*\n\nEnvía la **Key** que deseas resetear para liberar tu dispositivo.\n\n_Nota: Solo puedes resetear tu Key 1 vez cada 7 horas._', { parse_mode: 'Markdown' });
@@ -773,10 +871,10 @@ bot.on('message', async (msg) => {
                         `💰 Saldo: *$${parseFloat(webUser.balance).toFixed(2)} USD*\n\n` +
                         `🏆 *Rango Actual:* ${rangoActual.nombre}\n` +
                         `📈 *Total Gastado:* $${totalGastado.toFixed(2)} USD\n` +
-                        `💸 *Descuento de Rango:* ${rangoActual.descuento}% permanente`;
+                        `💸 *Descuento de Rango:* -$${parseFloat(rangoActual.descuento || 0).toFixed(2)} USD permanente en la tienda.`;
 
         if (webUser.active_discount && webUser.active_discount > 0) {
-            msgPerfil += `\n\n🎟️ *Cupón Activo:* Tienes un +${webUser.active_discount}% EXTRA para tu próxima compra en la tienda.`;
+            msgPerfil += `\n\n🎟️ *Cupón Activo:* Tienes un ${webUser.active_discount}% EXTRA OFF para tu próxima compra.`;
         }
         return bot.sendMessage(chatId, msgPerfil, { parse_mode: 'Markdown' });
     }
@@ -792,17 +890,16 @@ bot.on('message', async (msg) => {
         const totalGastado = calcularGastoTotal(webUser.history);
         const rangoActual = await obtenerRango(db, totalGastado);
         const activeDiscount = parseFloat(webUser.active_discount || 0);
-        
-        const totalDesc = Math.min(rangoActual.descuento + activeDiscount, 100);
 
         let header = `🛒 *ARSENAL DISPONIBLE*\n\n`;
         if (rangoActual.descuento > 0) {
-            header += `🏆 Por tu rango *${rangoActual.nombre}* tienes **${rangoActual.descuento}% OFF**.\n`;
+            header += `🏆 Por tu rango *${rangoActual.nombre}* tienes **-$${parseFloat(rangoActual.descuento).toFixed(2)} USD** de descuento fijo en cada producto.\n`;
         }
         if (activeDiscount > 0) {
             header += `🎟️ Tienes un cupón extra del **${activeDiscount}% OFF**.\n`;
         }
-        if (totalDesc > 0) header += `\n👇 Precios con tu descuento especial ya aplicado:\n`;
+        
+        if (rangoActual.descuento > 0 || activeDiscount > 0) header += `\n👇 Precios con tu descuento especial ya aplicado:\n`;
         else header += `Selecciona un producto:\n`;
 
         let inlineKeyboard = [];
@@ -811,9 +908,17 @@ bot.on('message', async (msg) => {
             const stock = p.keys ? Object.keys(p.keys).length : 0;
             if (stock > 0) {
                 let showPrice = p.price;
-                if (totalDesc > 0) {
-                    showPrice = p.price - (p.price * (totalDesc / 100));
+                
+                // Primero restamos el USD fijo del rango
+                if (rangoActual.descuento > 0) {
+                    showPrice = Math.max(0, showPrice - rangoActual.descuento);
                 }
+                
+                // Luego quitamos el porcentaje del cupón si lo tiene
+                if (activeDiscount > 0) {
+                    showPrice = showPrice - (showPrice * (activeDiscount / 100));
+                }
+                
                 inlineKeyboard.push([{ text: `Comprar ${p.name} - $${showPrice.toFixed(2)} (${stock} disp)`, callback_data: `buy|${child.key}` }]);
             }
         });
@@ -827,7 +932,7 @@ bot.on('message', async (msg) => {
             const rangos = await getRanks(db);
             let inlineKeyboard = [];
             rangos.forEach(r => {
-                inlineKeyboard.push([{ text: `${r.nombre} - $${r.minGastado} USD | ${r.descuento}% OFF`, callback_data: `editrank|${r.id}` }]);
+                inlineKeyboard.push([{ text: `${r.nombre} - $${r.minGastado} USD | -$${parseFloat(r.descuento || 0).toFixed(2)} USD`, callback_data: `editrank|${r.id}` }]);
             });
             return bot.sendMessage(chatId, '🏆 *GESTOR DE RANGOS VIP*\n\nSelecciona el rango que deseas modificar:', { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
         }
@@ -1033,10 +1138,10 @@ bot.on('callback_query', async (query) => {
             
             const inlineKeyboard = [
                 [{ text: '💰 Editar Gasto Mínimo (USD)', callback_data: `er_min|${rankId}` }],
-                [{ text: '📉 Editar Descuento (%)', callback_data: `er_desc|${rankId}` }]
+                [{ text: '📉 Editar Descuento Fijo (USD)', callback_data: `er_desc|${rankId}` }]
             ];
             
-            bot.editMessageText(`⚙️ *Editando: ${rankData.nombre}*\n\nGasto requerido actual: *$${rankData.minGastado} USD*\nDescuento actual: *${rankData.descuento}%*\n\n¿Qué valor deseas cambiar?`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+            bot.editMessageText(`⚙️ *Editando: ${rankData.nombre}*\n\nGasto requerido actual: *$${rankData.minGastado} USD*\nDescuento actual: *-$${parseFloat(rankData.descuento || 0).toFixed(2)} USD*\n\n¿Qué valor deseas cambiar?`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
             return;
         }
 
@@ -1050,7 +1155,7 @@ bot.on('callback_query', async (query) => {
         if (data.startsWith('er_desc|') && (adminData.isSuper || adminData.perms.products)) {
             const rankId = data.split('|')[1];
             userStates[chatId] = { step: 'EDIT_RANK_DESC', data: { rankId: rankId } };
-            bot.sendMessage(chatId, '📉 Escribe el nuevo **porcentaje de descuento** (solo el número, ej: 15):');
+            bot.sendMessage(chatId, '📉 Escribe el nuevo **descuento fijo en USD** (ej: 1.5 para descontar dólar y medio):');
             return;
         }
 
@@ -1302,12 +1407,17 @@ bot.on('callback_query', async (query) => {
         
         const totalGastado = calcularGastoTotal(webUser.history);
         const rangoActual = await obtenerRango(db, totalGastado);
-        
-        const totalDesc = Math.min(rangoActual.descuento + activeDiscount, 100);
 
+        // FORMULA CON DESCUENTO FIJO
         let finalPrice = product.price;
-        if (totalDesc > 0) {
-            finalPrice = product.price - (product.price * (totalDesc / 100));
+        
+        // 1. Aplicamos el descuento fijo (en USD) y evitamos que quede negativo
+        if (rangoActual.descuento > 0) {
+            finalPrice = Math.max(0, finalPrice - rangoActual.descuento);
+        }
+        // 2. Si el usuario tiene un cupón de porcentaje, se lo quitamos al sobrante
+        if (activeDiscount > 0) {
+            finalPrice = finalPrice - (finalPrice * (activeDiscount / 100));
         }
 
         if (currentBalance < finalPrice) return bot.editMessageText(`❌ Saldo insuficiente para esta compra.\n\nPrecio final: $${finalPrice.toFixed(2)} USD\nTu saldo: $${currentBalance.toFixed(2)} USD`, { chat_id: chatId, message_id: waitMsg.message_id });
@@ -1339,8 +1449,8 @@ bot.on('callback_query', async (query) => {
             await update(ref(db), updates);
             
             let exitoMsg = `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``;
-            if (totalDesc > 0) {
-                exitoMsg += `\n\n🎟️ _Se aplicó tu descuento de rango/cupón del ${totalDesc}% a esta compra. Pagaste $${finalPrice.toFixed(2)} USD._`;
+            if (rangoActual.descuento > 0 || activeDiscount > 0) {
+                exitoMsg += `\n\n🎟️ _Se aplicaron tus descuentos a esta compra. Pagaste $${finalPrice.toFixed(2)} USD._`;
             }
             
             bot.editMessageText(exitoMsg, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'Markdown' });
@@ -1355,4 +1465,9 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log('🤖 Bot LUCK XIT PRO V4 (Optimizado sin Sub-Bots) iniciado...');
+// Exportamos la función para que recargas.js pueda usarla
+module.exports = {
+    verificarBonoReferido
+};
+
+console.log('🤖 Bot LUCK XIT PRO V4 (Rangos USD y Referidos) iniciado...');
