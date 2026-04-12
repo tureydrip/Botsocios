@@ -19,15 +19,19 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// === NUEVO: FUNCIONES PARA MANDAR AL BOT DE WHATSAPP ===
+// === INYECCIÓN WHATSAPP (FUNCIONES DE ENVÍO) ===
 function sendWaMessage(numero, mensaje) {
     if(!numero) return;
     push(ref(db, 'wa_outbox'), { number: numero, message: mensaje });
 }
+
 async function sendWaToUid(uid, mensaje) {
-    const snap = await get(ref(db, `users/${uid}/wa_number`));
-    if(snap.exists()) sendWaMessage(snap.val(), mensaje);
+    const snap = await get(ref(db, `users/${uid}`));
+    if(snap.exists() && snap.val().wa_number) {
+        sendWaMessage(snap.val().wa_number, mensaje);
+    }
 }
+
 async function sendWaGlobal(mensaje) {
     const snap = await get(ref(db, 'users'));
     if(snap.exists()) {
@@ -36,7 +40,7 @@ async function sendWaGlobal(mensaje) {
         });
     }
 }
-// =========================================================
+// ===============================================
 
 // --- SISTEMA DE RANGOS VIP DINÁMICO (FIJO USD) ---
 async function getRanks(db) {
@@ -110,6 +114,9 @@ async function verificarBonoReferido(db, bot, targetUid, amountAdded) {
                     if (inviterTgId) {
                         bot.sendMessage(inviterTgId, `🎉 *¡BONO DE REFERIDO!*\n\nTu referido *${user.username}* acaba de realizar su primera recarga de $5 USD o más.\n🎁 Acabas de recibir *$2.00 USD* de saldo gratis.\n💰 Tu nuevo saldo es: *$${(inviterBal + 2).toFixed(2)} USD*`, { parse_mode: 'Markdown' });
                     }
+                    
+                    // INYECCIÓN WA: Bono Referido
+                    sendWaToUid(inviterUid, `🎉 *¡BONO SociosXit!*\nHas ganado $2.00 USD de saldo gratis gracias a la recarga de tu referido.`);
                 }
             }
         }
@@ -161,7 +168,12 @@ function buildAdminKeyboard(adminData) {
     
     if (row.length > 0) kb.push(row);
     let bottomRow = [];
-    if (adminData.isSuper) { bottomRow.push({ text: '👮 Gest. Admins' }); bottomRow.push({ text: '🌍 Gest. Países' }); }
+    if (adminData.isSuper) { 
+        bottomRow.push({ text: '👮 Gest. Admins' }); 
+        bottomRow.push({ text: '🌍 Gest. Países' }); 
+        // INYECCIÓN WA: Botón de vinculación
+        bottomRow.push({ text: '📱 Vincular Mi WA' }); 
+    }
     bottomRow.push({ text: '❌ Cancelar Acción' }); kb.push(bottomRow);
     
     return { reply_markup: { keyboard: kb, resize_keyboard: true, is_persistent: true } };
@@ -267,39 +279,6 @@ bot.on('message', async (msg) => {
     const adminData = await getAdminData(tgId);
     const keyboard = adminData ? buildAdminKeyboard(adminData) : userKeyboard;
 
-    // === NUEVO: BLOQUEO PARA VINCULAR WHATSAPP CON CÓDIGO ===
-    if (!adminData && !webUser.wa_number) {
-        if (!userStates[chatId] || (userStates[chatId].step !== 'WAITING_FOR_WA_NUMBER' && userStates[chatId].step !== 'WAITING_FOR_WA_OTP')) {
-            userStates[chatId] = { step: 'WAITING_FOR_WA_NUMBER', data: {} };
-            return bot.sendMessage(chatId, '📱 *VINCULACIÓN DE WHATSAPP OBLIGATORIA*\n\nPara usar el bot debes vincular tu número de WhatsApp activo.\n\n✍️ *Coloca tu número con el código de país* (sin el signo +).\nEjemplo: `573114998378`', { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } });
-        }
-
-        if (userStates[chatId].step === 'WAITING_FOR_WA_NUMBER') {
-            const numero = text.trim().replace(/\D/g, '');
-            if (numero.length < 10) return bot.sendMessage(chatId, '❌ Número inválido. Asegúrate de colocar el código de país.');
-            
-            const otp = Math.floor(100000 + Math.random() * 900000).toString();
-            userStates[chatId] = { step: 'WAITING_FOR_WA_OTP', data: { number: numero, otp: otp } };
-            
-            // Le manda el código al WhatsApp
-            sendWaMessage(numero, `🤖 *Código de Verificación SociosXit*\n\nTu código es: *${otp}*\n\nIngrésalo en Telegram para vincular tu cuenta.`);
-
-            return bot.sendMessage(chatId, `⏳ Hemos enviado un código de verificación por WhatsApp al número +${numero}.\n\n🔑 *Por favor, ingresa el código de 6 dígitos aquí:*`, { parse_mode: 'Markdown' });
-        }
-
-        if (userStates[chatId].step === 'WAITING_FOR_WA_OTP') {
-            if (text.trim() === userStates[chatId].data.otp) {
-                await update(ref(db), { [`users/${webUid}/wa_number`]: userStates[chatId].data.number });
-                userStates[chatId] = null;
-                return bot.sendMessage(chatId, '✅ *¡Número vinculado exitosamente!*\nYa puedes acceder a la tienda.', { parse_mode: 'Markdown', ...userKeyboard });
-            } else {
-                return bot.sendMessage(chatId, '❌ Código incorrecto. Intenta de nuevo.');
-            }
-        }
-        return; 
-    }
-    // =========================================================
-
     if (!adminData) {
         let isBanned = webUser.banned;
         if (webUser.banUntil && webUser.banUntil > Date.now()) {
@@ -317,6 +296,14 @@ bot.on('message', async (msg) => {
         userStates[chatId] = null;
         return bot.sendMessage(chatId, '✅ Acción cancelada. ¿Qué deseas hacer ahora?', keyboard);
     }
+
+    // === INYECCIÓN WA: Generar código WA ===
+    if (text === '📱 Vincular Mi WA' && adminData && adminData.isSuper) {
+        bot.sendMessage(chatId, '⏳ Mandando la orden a Firebase para generar tu código WA de 8 letras...');
+        await update(ref(db), { 'wa_system/request_code': Date.now() });
+        return;
+    }
+    // =======================================
 
     if (msg.photo && userStates[chatId]) {
         const state = userStates[chatId];
@@ -366,7 +353,7 @@ bot.on('message', async (msg) => {
             }
 
             let histText = `📜 *ÚLTIMAS COMPRAS DE ${targetUsername}*\n\n`;
-            const compras = Object.values(targetUser.history).sort((a, b) => b.date - a.date).slice(0, 15); // Mostrar últimas 15
+            const compras = Object.values(targetUser.history).sort((a, b) => b.date - a.date).slice(0, 15);
 
             compras.forEach((c, index) => {
                 const fecha = new Date(c.date).toLocaleString('es-CO');
@@ -770,9 +757,8 @@ bot.on('message', async (msg) => {
                 
                 bot.editMessageText(`✅ Mensaje enviado exitosamente a ${count} usuarios.`, { chat_id: chatId, message_id: waitMsg.message_id });
                 
-                // === NUEVO: AVISO WHATSAPP ===
-                sendWaGlobal(`📢 *Anuncio Global SociosXit*\n\n${text}`);
-                // ==============================
+                // INYECCIÓN WA: Mensaje Global
+                sendWaGlobal(`📢 *Anuncio SociosXit*\n\n${text}`);
 
                 notifySuperAdmin(webUser.username, tgId, 'Mensaje Global Enviado', `Texto enviado: "${text.substring(0, 50)}..."`);
                 userStates[chatId] = null;
@@ -823,9 +809,8 @@ bot.on('message', async (msg) => {
                         bot.sendMessage(targetTgId, `🎉 Un administrador SociosXit te ha depositado: *$${amount} USD* de saldo.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
                     }
                     
-                    // === NUEVO: AVISO WHATSAPP ===
+                    // INYECCIÓN WA: Aviso de Saldo
                     sendWaToUid(foundUid, `💰 *Saldo Añadido*\nUn administrador te ha depositado $${amount} USD. Tu nuevo saldo es de $${nuevoSaldo.toFixed(2)} USD.`);
-                    // ==============================
 
                     notifySuperAdmin(webUser.username, tgId, 'Añadió Saldo Manual', `Monto: $${amount} USD al usuario: ${state.data.targetUser}`);
                     await verificarBonoReferido(db, bot, foundUid, amount);
@@ -868,9 +853,8 @@ bot.on('message', async (msg) => {
                 
                 bot.sendMessage(chatId, `✅ Producto *${state.data.name}* creado exitosamente con ${warranty > 0 ? warranty + ' hrs de garantía' : 'garantía ilimitada'}.`, { parse_mode: 'Markdown', ...keyboard });
                 
-                // === NUEVO: AVISO WHATSAPP ===
-                sendWaGlobal(`🆕 *¡NUEVO PRODUCTO!*\n\nSe ha agregado el producto *${state.data.name}* por tan solo $${state.data.price} USD.\n¡Ve al bot de Telegram a comprarlo!`);
-                // ==============================
+                // INYECCIÓN WA: Aviso Nuevo Producto
+                sendWaGlobal(`🆕 *¡NUEVO PRODUCTO!*\n\nSe ha agregado el producto *${state.data.name}* a la tienda. ¡Ve a Telegram para adquirirlo!`);
 
                 notifySuperAdmin(webUser.username, tgId, 'Creó un Producto', `Nombre: ${state.data.name} | Precio: $${state.data.price} | Garantía: ${warranty}h`);
                 userStates[chatId] = null;
@@ -895,9 +879,8 @@ bot.on('message', async (msg) => {
                 await update(ref(db), updates);
                 bot.sendMessage(chatId, `✅ ¡Listo! Se agregaron ${cleanKeys.length} keys al producto.`, keyboard);
                 
-                // === NUEVO: AVISO WHATSAPP ===
-                sendWaGlobal(`🔥 *¡Stock Renovado!*\n\nAcabamos de agregar ${cleanKeys.length} nuevas keys a la tienda. ¡Aprovecha antes de que se agoten!`);
-                // ==============================
+                // INYECCIÓN WA: Aviso Stock
+                sendWaGlobal(`🔥 *¡STOCK RENOVADO!*\n\nAcabamos de agregar ${cleanKeys.length} nuevas keys. ¡Aprovecha antes de que se agoten!`);
 
                 notifySuperAdmin(webUser.username, tgId, 'Añadió Stock', `Se agregaron ${cleanKeys.length} keys al producto ID: ${state.data.prodId}`);
                 userStates[chatId] = null;
@@ -1169,9 +1152,8 @@ bot.on('message', async (msg) => {
             
             await update(ref(db), { 'settings/maintenance': newMaint });
             
-            // === NUEVO: AVISO WHATSAPP ===
+            // INYECCIÓN WA: Mantenimiento
             sendWaGlobal(`⚙️ *Atención*\nLos servicios de SociosXit ahora se encuentran: ${newMaint ? 'EN MANTENIMIENTO 🔴' : 'ACTIVOS Y FUNCIONANDO 🟢'}`);
-            // ==============================
 
             notifySuperAdmin(webUser.username, tgId, 'Modificó Mantenimiento', `Estado cambiado a: ${newMaint ? 'ACTIVO 🔴' : 'INACTIVO 🟢'}`);
             return bot.sendMessage(chatId, `🛠️ *MODO MANTENIMIENTO*\n\nEl acceso a la tienda y comandos para usuarios está: **${newMaint ? 'CERRADO (En Mantenimiento) 🔴' : 'ABIERTO (Normal) 🟢'}**`, { parse_mode: 'Markdown' });
@@ -1305,7 +1287,7 @@ bot.on('callback_query', async (query) => {
                 updates[`users/${targetUid}/history/${historyRef.key}`] = { 
                     product: product.name, 
                     key: keyToDeliver, 
-                    price: 0, // 0 porque fue un regalo
+                    price: 0, 
                     date: Date.now(), 
                     refunded: false,
                     warrantyHours: warrantyHours 
@@ -1564,12 +1546,11 @@ bot.on('callback_query', async (query) => {
         if (data.startsWith('ok_rech|') && (adminData.isSuper || adminData.perms.balance)) {
             const receiptId = data.split('|')[1];
             
-            // === NUEVO: AVISO WHATSAPP PARA RECARGA APROBADA ===
+            // INYECCIÓN WA: Recarga Aprobada
             const rSnap = await get(ref(db, `pending_receipts/${receiptId}`));
             if (rSnap.exists()) {
                 sendWaToUid(rSnap.val().uid, `✅ *Recarga Aprobada*\nSe ha acreditado tu recarga de $${rSnap.val().amount} USD.`);
             }
-            // ===================================================
 
             return sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, receiptId, adminUsername, tgId, notifySuperAdmin);
         }
@@ -1621,7 +1602,6 @@ bot.on('callback_query', async (query) => {
         const totalGastado = calcularGastoTotal(webUser.history);
         const rangoActual = await obtenerRango(db, totalGastado);
 
-        // FORMULA CON DESCUENTO FIJO
         let finalPrice = product.price;
         
         if (rangoActual.descuento > 0) {
@@ -1680,4 +1660,4 @@ module.exports = {
     verificarBonoReferido
 };
 
-console.log('🤖 Bot SociosXit PRO V4 (Edición Expandida + Historial + Regalos) iniciado...');
+console.log('🤖 Bot SociosXit PRO V4 iniciado (Telegram + WhatsApp Activo)...');
