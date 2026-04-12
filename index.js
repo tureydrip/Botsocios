@@ -55,10 +55,17 @@ function buildAdminKeyboard(adminData) {
         if (adminData.isSuper || adminData.perms[perm]) { row.push({ text }); if (row.length === 3) { kb.push(row); row = []; } }
     };
     
-    addBtn('📦 Crear Producto', 'products'); addBtn('📝 Editar Producto', 'products'); addBtn('🗑️ Eliminar Producto', 'products');
-    addBtn('🔑 Añadir Stock', 'products'); addBtn('💰 Añadir Saldo', 'balance'); addBtn('📢 Mensaje Global', 'broadcast');
-    addBtn('🔄 Revisar Reembolsos', 'refunds'); addBtn('🎟️ Crear Cupón', 'coupons'); addBtn('📊 Estadísticas', 'stats');
-    addBtn('📋 Ver Usuarios', 'stats'); addBtn('🔨 Gest. Usuarios', 'users'); addBtn('🛠️ Mantenimiento', 'maintenance');
+    // SISTEMA NUEVO DE TIENDA
+    addBtn('📁 Gestión Tienda', 'products'); 
+    addBtn('🔑 Añadir Stock', 'products'); 
+    addBtn('💰 Añadir Saldo', 'balance'); 
+    addBtn('📢 Mensaje Global', 'broadcast');
+    addBtn('🔄 Revisar Reembolsos', 'refunds'); 
+    addBtn('🎟️ Crear Cupón', 'coupons'); 
+    addBtn('📊 Estadísticas', 'stats');
+    addBtn('📋 Ver Usuarios', 'stats'); 
+    addBtn('🔨 Gest. Usuarios', 'users'); 
+    addBtn('🛠️ Mantenimiento', 'maintenance');
     
     if (row.length > 0) kb.push(row);
     let bottomRow = [];
@@ -331,6 +338,95 @@ bot.on('message', async (msg) => {
         }
 
         if (adminData) {
+            // == NUEVOS ESTADOS DE TIENDA POR CATEGORÍA ==
+
+            if (state.step === 'CREATE_CAT_NAME' && adminData.isSuper) {
+                const newCatRef = push(ref(db, 'categories'));
+                await set(newCatRef, { name: text });
+                bot.sendMessage(chatId, `✅ Categoría *${text}* creada. Ahora puedes agregarle duraciones o migrarle productos viejos.`, { parse_mode: 'Markdown', ...keyboard });
+                userStates[chatId] = null;
+                return;
+            }
+
+            if (state.step === 'NEW_DUR_NAME' && adminData.isSuper) {
+                state.data.durName = text;
+                state.step = 'NEW_DUR_PRICE';
+                return bot.sendMessage(chatId, `Ingresa el **precio** en USD para *${text}* (ej: 2.5):`, { parse_mode: 'Markdown' });
+            }
+            if (state.step === 'NEW_DUR_PRICE' && adminData.isSuper) {
+                const price = parseFloat(text);
+                if (isNaN(price)) return bot.sendMessage(chatId, '❌ Precio inválido. Usa números.');
+                state.data.price = price;
+                state.step = 'NEW_DUR_WARR';
+                return bot.sendMessage(chatId, 'Ingresa el **tiempo de garantía** en horas (ej: 24). Si es sin límite pon 0:', { parse_mode: 'Markdown' });
+            }
+            if (state.step === 'NEW_DUR_WARR' && adminData.isSuper) {
+                const warranty = parseFloat(text);
+                if (isNaN(warranty) || warranty < 0) return bot.sendMessage(chatId, '❌ Garantía inválida.');
+                
+                const newDurRef = push(ref(db, `categories/${state.data.catId}/durations`));
+                await set(newDurRef, { 
+                    name: state.data.durName, 
+                    price: state.data.price, 
+                    warranty: warranty 
+                });
+                
+                bot.sendMessage(chatId, `✅ Duración *${state.data.durName}* agregada exitosamente a la categoría.`, { parse_mode: 'Markdown', ...keyboard });
+                userStates[chatId] = null;
+                return;
+            }
+
+            if (state.step === 'MIGRATE_DUR_NAME' && adminData.isSuper) {
+                const durName = text;
+                const { oldProdId, catId, oldData } = state.data;
+                
+                const newDurRef = push(ref(db, `categories/${catId}/durations`));
+                await set(newDurRef, {
+                    name: durName,
+                    price: oldData.price,
+                    warranty: oldData.warranty || 0,
+                    keys: oldData.keys || null
+                });
+                
+                await remove(ref(db, `products/${oldProdId}`)); 
+                bot.sendMessage(chatId, `✅ Producto antiguo migrado exitosamente a la categoría como *${durName}*.`, keyboard);
+                userStates[chatId] = null;
+                return;
+            }
+
+            if (state.step === 'EDIT_NAME_FINAL' && adminData.isSuper) {
+                const { path } = state.data;
+                await update(ref(db), { [`${path}/name`]: text });
+                bot.sendMessage(chatId, `✅ Nombre actualizado exitosamente a: *${text}*`, keyboard);
+                userStates[chatId] = null;
+                return;
+            }
+
+            if (state.step === 'ADD_STOCK_KEYS_NEW' && (adminData.isSuper || adminData.perms.products)) {
+                const keysRaw = text;
+                const cleanKeys = keysRaw.split(/[\n,\s]+/).map(k => k.trim()).filter(k => k.length > 0);
+                
+                if (cleanKeys.length === 0) {
+                    userStates[chatId] = null;
+                    return bot.sendMessage(chatId, '❌ No se detectaron keys válidas. Operación cancelada.');
+                }
+
+                const updates = {};
+                cleanKeys.forEach(k => {
+                    const newId = push(ref(db, `categories/${state.data.catId}/durations/${state.data.durId}/keys`)).key;
+                    updates[`categories/${state.data.catId}/durations/${state.data.durId}/keys/${newId}`] = k;
+                });
+
+                await update(ref(db), updates);
+                bot.sendMessage(chatId, `✅ ¡Listo! Se agregaron ${cleanKeys.length} keys al producto.`, keyboard);
+                
+                notifySuperAdmin(webUser.username, tgId, 'Añadió Stock', `Se agregaron ${cleanKeys.length} keys a una categoría.`);
+                userStates[chatId] = null;
+                return;
+            }
+
+            // == RESTO DE ESTADOS ADMIN ==
+
             if (state.step === 'TEMP_BAN_TIME' && (adminData.isSuper || adminData.perms.users)) {
                 const hrs = parseFloat(text);
                 if (isNaN(hrs) || hrs <= 0) return bot.sendMessage(chatId, '❌ Cantidad de horas inválidas.');
@@ -434,31 +530,6 @@ bot.on('message', async (msg) => {
                 bot.sendMessage(targetTgId, `❌ *SOLICITUD RECHAZADA*\n\nTu solicitud no ha sido aprobada por la siguiente razón:\n\n📝 _"${reason}"_\n\nContacta a soporte si crees que es un error.`, { parse_mode: 'Markdown' });
                 
                 notifySuperAdmin(webUser.username, tgId, 'Envió Razón de Rechazo', `Al usuario con ID ${targetTgId}. Motivo: "${reason}"`);
-                userStates[chatId] = null;
-                return;
-            }
-
-            if (state.step.startsWith('EDIT_PROD_') && (adminData.isSuper || adminData.perms.products)) {
-                const prodId = state.data.prodId;
-                const fieldType = state.step.split('_')[2]; 
-                
-                let updates = {};
-                if (fieldType === 'NAME') {
-                    updates[`products/${prodId}/name`] = text;
-                } else if (fieldType === 'PRICE') {
-                    const price = parseFloat(text);
-                    if (isNaN(price)) return bot.sendMessage(chatId, '❌ Precio inválido. Usa números.');
-                    updates[`products/${prodId}/price`] = price;
-                } else if (fieldType === 'WARR') {
-                    const warr = parseFloat(text);
-                    if (isNaN(warr) || warr < 0) return bot.sendMessage(chatId, '❌ Garantía inválida. Usa números mayores o iguales a 0.');
-                    updates[`products/${prodId}/warranty`] = warr;
-                }
-                
-                await update(ref(db), updates);
-                bot.sendMessage(chatId, `✅ Producto actualizado correctamente.`, keyboard);
-                
-                notifySuperAdmin(webUser.username, tgId, 'Editó Producto', `Campo cambiado: ${fieldType} | Nuevo valor: ${text} | Prod ID: ${prodId}`);
                 userStates[chatId] = null;
                 return;
             }
@@ -587,65 +658,6 @@ bot.on('message', async (msg) => {
                 userStates[chatId] = null; 
                 return;
             }
-
-            if (state.step === 'CREATE_PROD_NAME' && (adminData.isSuper || adminData.perms.products)) {
-                state.data.name = text;
-                state.step = 'CREATE_PROD_PRICE';
-                return bot.sendMessage(chatId, 'Ingresa el **precio** en USD (ej: 2.5):', { parse_mode: 'Markdown' });
-            }
-            if (state.step === 'CREATE_PROD_PRICE' && (adminData.isSuper || adminData.perms.products)) {
-                const price = parseFloat(text);
-                if (isNaN(price)) return bot.sendMessage(chatId, '❌ Precio inválido. Usa números.');
-                state.data.price = price;
-                state.step = 'CREATE_PROD_DURATION';
-                return bot.sendMessage(chatId, 'Ingresa la **duración** (ej: 24 horas o Mensual):', { parse_mode: 'Markdown' });
-            }
-            if (state.step === 'CREATE_PROD_DURATION' && (adminData.isSuper || adminData.perms.products)) {
-                state.data.duration = text;
-                state.step = 'CREATE_PROD_WARRANTY';
-                return bot.sendMessage(chatId, 'Ingresa el **tiempo de garantía** en horas (ej: 24).\n\n_(Si no quieres que tenga límite de tiempo para reembolso, escribe **0**)_:', { parse_mode: 'Markdown' });
-            }
-            if (state.step === 'CREATE_PROD_WARRANTY' && (adminData.isSuper || adminData.perms.products)) {
-                const warranty = parseFloat(text);
-                if (isNaN(warranty) || warranty < 0) return bot.sendMessage(chatId, '❌ Garantía inválida. Usa números (ej: 24 o 0).');
-                
-                const newProdRef = push(ref(db, 'products'));
-                await set(newProdRef, { 
-                    name: state.data.name, 
-                    price: state.data.price, 
-                    duration: state.data.duration, 
-                    warranty: warranty 
-                });
-                
-                bot.sendMessage(chatId, `✅ Producto *${state.data.name}* creado exitosamente con ${warranty > 0 ? warranty + ' hrs de garantía' : 'garantía ilimitada'}.`, { parse_mode: 'Markdown', ...keyboard });
-                
-                notifySuperAdmin(webUser.username, tgId, 'Creó un Producto', `Nombre: ${state.data.name} | Precio: $${state.data.price} | Garantía: ${warranty}h`);
-                userStates[chatId] = null;
-                return;
-            }
-
-            if (state.step === 'ADD_STOCK_KEYS' && (adminData.isSuper || adminData.perms.products)) {
-                const keysRaw = text;
-                const cleanKeys = keysRaw.split(/[\n,\s]+/).map(k => k.trim()).filter(k => k.length > 0);
-                
-                if (cleanKeys.length === 0) {
-                    userStates[chatId] = null;
-                    return bot.sendMessage(chatId, '❌ No se detectaron keys válidas. Operación cancelada.');
-                }
-
-                const updates = {};
-                cleanKeys.forEach(k => {
-                    const newId = push(ref(db, `products/${state.data.prodId}/keys`)).key;
-                    updates[`products/${state.data.prodId}/keys/${newId}`] = k;
-                });
-
-                await update(ref(db), updates);
-                bot.sendMessage(chatId, `✅ ¡Listo! Se agregaron ${cleanKeys.length} keys al producto.`, keyboard);
-                
-                notifySuperAdmin(webUser.username, tgId, 'Añadió Stock', `Se agregaron ${cleanKeys.length} keys al producto ID: ${state.data.prodId}`);
-                userStates[chatId] = null;
-                return;
-            }
         }
         
         if (state.step === 'WAITING_FOR_USER_REFUND_KEY') {
@@ -719,30 +731,23 @@ bot.on('message', async (msg) => {
         return sistemaRecargas.iniciarRecarga(bot, db, chatId, webUser, userStates);
     }
 
+    // === TIENDA ACTUALIZADA CON CATEGORÍAS ===
     if (text === '🛒 Tienda') {
-        const productsSnap = await get(ref(db, 'products'));
-        if (!productsSnap.exists()) return bot.sendMessage(chatId, 'Tienda vacía en este momento.');
+        const categoriesSnap = await get(ref(db, 'categories'));
+        if (!categoriesSnap.exists()) return bot.sendMessage(chatId, '🛒 Tienda vacía en este momento.');
         
-        const activeDiscount = parseFloat(webUser.active_discount || 0);
-        let header = `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto:`;
-        if (activeDiscount > 0) {
-            header = `🛒 *ARSENAL DISPONIBLE*\n🎟️ Tienes un **${activeDiscount}% de descuento** que se aplicará automáticamente a tu compra.\n\nSelecciona un producto:`;
+        let header = `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto para ver sus duraciones:`;
+        if (webUser.active_discount && webUser.active_discount > 0) {
+            header = `🛒 *ARSENAL DISPONIBLE*\n🎟️ Tienes un **${webUser.active_discount}% de descuento** automático.\n\nSelecciona un producto:`;
         }
 
         let inlineKeyboard = [];
-        productsSnap.forEach(child => {
-            const p = child.val();
-            const stock = p.keys ? Object.keys(p.keys).length : 0;
-            if (stock > 0) {
-                let showPrice = p.price;
-                if (activeDiscount > 0) {
-                    showPrice = p.price - (p.price * (activeDiscount / 100));
-                }
-                inlineKeyboard.push([{ text: `Comprar ${p.name} - $${showPrice.toFixed(2)} (${stock} disp)`, callback_data: `buy|${child.key}` }]);
-            }
+        categoriesSnap.forEach(child => {
+            const cat = child.val();
+            inlineKeyboard.push([{ text: `📁 ${cat.name}`, callback_data: `viewcat|${child.key}` }]);
         });
-        if(inlineKeyboard.length === 0) return bot.sendMessage(chatId, '❌ Todos los productos están agotados.');
         
+        if(inlineKeyboard.length === 0) return bot.sendMessage(chatId, '❌ No hay categorías disponibles.');
         return bot.sendMessage(chatId, header, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
     }
 
@@ -772,7 +777,7 @@ bot.on('message', async (msg) => {
             const startOfDayTs = new Date(`${year}-${month}-${day}T00:00:00-05:00`).getTime();
 
             const usersSnap = await get(ref(db, 'users'));
-            const productsSnap = await get(ref(db, 'products'));
+            const catSnap = await get(ref(db, 'categories'));
             
             let totalUsers = 0; 
             let allTimeRecharges = 0; let allTimeSalesUsd = 0; let allTimeSalesCount = 0;
@@ -800,11 +805,15 @@ bot.on('message', async (msg) => {
                 });
             }
             
-            let activeProducts = 0; let totalKeys = 0;
-            if (productsSnap.exists()) {
-                productsSnap.forEach(p => {
-                    activeProducts++;
-                    if (p.val().keys) totalKeys += Object.keys(p.val().keys).length;
+            let activeCats = 0; let totalKeys = 0;
+            if (catSnap.exists()) {
+                catSnap.forEach(c => {
+                    activeCats++;
+                    if (c.val().durations) {
+                        Object.values(c.val().durations).forEach(d => {
+                            if (d.keys) totalKeys += Object.keys(d.keys).length;
+                        });
+                    }
                 });
             }
             
@@ -817,7 +826,7 @@ bot.on('message', async (msg) => {
             `💵 Dinero Recargado: $${allTimeRecharges.toFixed(2)} USD\n` +
             `🛍️ Ventas Totales: ${allTimeSalesCount} ($${allTimeSalesUsd.toFixed(2)} USD)\n\n` +
             `📦 *INVENTARIO*\n` +
-            `Activos: ${activeProducts} Prod. | Stock: ${totalKeys} Keys`;
+            `Categorías: ${activeCats} | Stock Total: ${totalKeys} Keys`;
             
             return bot.editMessageText(msgStats, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'Markdown'});
         }
@@ -843,28 +852,6 @@ bot.on('message', async (msg) => {
             return bot.sendMessage(chatId, `🛠️ *MODO MANTENIMIENTO*\n\nEl acceso a la tienda y comandos para usuarios está: **${newMaint ? 'CERRADO (En Mantenimiento) 🔴' : 'ABIERTO (Normal) 🟢'}**`, { parse_mode: 'Markdown' });
         }
 
-        if (text === '🗑️ Eliminar Producto' && (adminData.isSuper || adminData.perms.products)) {
-            const productsSnap = await get(ref(db, 'products'));
-            if (!productsSnap.exists()) return bot.sendMessage(chatId, '❌ No hay productos creados.');
-            
-            let inlineKeyboard = [];
-            productsSnap.forEach(child => {
-                inlineKeyboard.push([{ text: `❌ Eliminar: ${child.val().name}`, callback_data: `delprod|${child.key}` }]);
-            });
-            return bot.sendMessage(chatId, `🗑️ *ELIMINAR PRODUCTO*\nSelecciona el producto que deseas eliminar permanentemente:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
-        }
-
-        if (text === '📝 Editar Producto' && (adminData.isSuper || adminData.perms.products)) {
-            const productsSnap = await get(ref(db, 'products'));
-            if (!productsSnap.exists()) return bot.sendMessage(chatId, '❌ No hay productos creados.');
-            
-            let inlineKeyboard = [];
-            productsSnap.forEach(child => {
-                inlineKeyboard.push([{ text: `✏️ Editar: ${child.val().name}`, callback_data: `seledit|${child.key}` }]);
-            });
-            return bot.sendMessage(chatId, `📝 *EDITAR PRODUCTO*\nSelecciona el producto que deseas modificar:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
-        }
-        
         if (text === '🔄 Revisar Reembolsos' && (adminData.isSuper || adminData.perms.refunds)) {
             userStates[chatId] = { step: 'WAITING_FOR_REFUND_KEY', data: {} };
             return bot.sendMessage(chatId, '🔎 *SISTEMA DE REEMBOLSOS (Global)*\n\nPor favor, pega y envía la **Key** exacta que deseas buscar y reembolsar:', { parse_mode: 'Markdown' });
@@ -879,21 +866,26 @@ bot.on('message', async (msg) => {
             userStates[chatId] = { step: 'ADD_BALANCE_USER', data: {} };
             return bot.sendMessage(chatId, 'Escribe el **Nombre de Usuario** exacto al que deseas añadir saldo:', { parse_mode: 'Markdown' });
         }
-        
-        if (text === '📦 Crear Producto' && (adminData.isSuper || adminData.perms.products)) {
-            userStates[chatId] = { step: 'CREATE_PROD_NAME', data: {} };
-            return bot.sendMessage(chatId, 'Escribe el **Nombre** del nuevo producto:', { parse_mode: 'Markdown' });
+
+        // === NUEVA GESTIÓN DE TIENDA ===
+        if (text === '📁 Gestión Tienda' && (adminData.isSuper || adminData.perms.products)) {
+            const kb = {
+                inline_keyboard: [
+                    [{ text: '➕ Crear Categoría', callback_data: 'mng_new_cat' }],
+                    [{ text: '📦 Agregar Duración (A una categoría)', callback_data: 'mng_new_dur' }],
+                    [{ text: '🔄 Migrar Antiguos a Categoría', callback_data: 'mng_mig_old' }]
+                ]
+            };
+            return bot.sendMessage(chatId, '📁 *GESTIÓN DE TIENDA AVANZADA*\n\n¿Qué deseas hacer?', { parse_mode: 'Markdown', reply_markup: kb });
         }
 
         if (text === '🔑 Añadir Stock' && (adminData.isSuper || adminData.perms.products)) {
-            const productsSnap = await get(ref(db, 'products'));
-            if (!productsSnap.exists()) return bot.sendMessage(chatId, '❌ No hay productos creados.');
+            const catSnap = await get(ref(db, 'categories'));
+            if (!catSnap.exists()) return bot.sendMessage(chatId, '❌ No hay categorías creadas.');
             
-            let inlineKeyboard = [];
-            productsSnap.forEach(child => {
-                inlineKeyboard.push([{ text: `➕ Stock a: ${child.val().name}`, callback_data: `stock|${child.key}` }]);
-            });
-            return bot.sendMessage(chatId, `📦 Selecciona a qué producto vas a agregarle Keys:`, { reply_markup: { inline_keyboard: inlineKeyboard } });
+            let kb = [];
+            catSnap.forEach(c => kb.push([{ text: `📁 ${c.val().name}`, callback_data: `stkcat|${c.key}` }]));
+            return bot.sendMessage(chatId, `📦 Selecciona la categoría a la que pertenece la duración:`, { reply_markup: { inline_keyboard: kb } });
         }
     }
 });
@@ -937,10 +929,68 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText(`✅ *Administrador revocado.*\n\nEl ID \`${targetTgId}\` ya no tiene acceso al panel de control ni a comandos especiales.`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
             return;
         }
+
+        // ============================================
+        // NUEVOS CALLBACKS DE GESTIÓN DE TIENDA (ADMIN)
+        // ============================================
+
+        if (data === 'mng_new_cat') {
+            userStates[chatId] = { step: 'CREATE_CAT_NAME', data: {} };
+            bot.sendMessage(chatId, '📁 Ingresa el nombre de la *NUEVA CATEGORÍA* (Ej: Free Fire VIP):', { parse_mode: 'Markdown' });
+            return;
+        }
+
+        if (data === 'mng_new_dur') {
+            const catSnap = await get(ref(db, 'categories'));
+            if (!catSnap.exists()) return bot.sendMessage(chatId, '❌ Primero debes crear una categoría.');
+            let kb = [];
+            catSnap.forEach(c => kb.push([{ text: `📁 ${c.val().name}`, callback_data: `newdurcat|${c.key}` }]));
+            bot.sendMessage(chatId, 'Selecciona en qué categoría vas a crear esta nueva Duración:', { reply_markup: { inline_keyboard: kb } });
+            return;
+        }
+
+        if (data.startsWith('newdurcat|')) {
+            const catId = data.split('|')[1];
+            userStates[chatId] = { step: 'NEW_DUR_NAME', data: { catId } };
+            bot.sendMessage(chatId, '⏱️ Escribe el nombre de esta duración (Ej: 24 Horas, Mensual, Semanal):');
+            return;
+        }
+
+        if (data === 'mng_mig_old') {
+            const prodSnap = await get(ref(db, 'products'));
+            if (!prodSnap.exists()) return bot.sendMessage(chatId, 'No hay productos antiguos "planos" para migrar.');
+            
+            let kb = [];
+            prodSnap.forEach(p => kb.push([{ text: `Mover: ${p.val().name}`, callback_data: `sel_old|${p.key}` }]));
+            bot.sendMessage(chatId, 'Selecciona el producto viejo que quieres meter en una categoría:', { reply_markup: { inline_keyboard: kb } });
+            return;
+        }
+
+        if (data.startsWith('sel_old|')) {
+            const oldProdId = data.split('|')[1];
+            const catSnap = await get(ref(db, 'categories'));
+            if (!catSnap.exists()) return bot.sendMessage(chatId, '❌ Primero debes crear una categoría.');
+            
+            let kb = [];
+            catSnap.forEach(c => kb.push([{ text: `Hacia: ${c.val().name}`, callback_data: `tomig|${oldProdId}|${c.key}` }]));
+            bot.sendMessage(chatId, '¿A qué categoría pertenece este producto viejo?', { reply_markup: { inline_keyboard: kb } });
+            return;
+        }
+
+        if (data.startsWith('tomig|')) {
+            const parts = data.split('|');
+            const oldProdId = parts[1];
+            const catId = parts[2];
+            
+            const oldData = (await get(ref(db, `products/${oldProdId}`))).val();
+            
+            userStates[chatId] = { step: 'MIGRATE_DUR_NAME', data: { oldProdId, catId, oldData } };
+            bot.sendMessage(chatId, `El producto viejo valía $${oldData.price}.\n\nEscribe cómo se llamará su **Duración** dentro de la nueva categoría (Ej: 24 Horas, Mensual):`);
+            return;
+        }
     }
 
     if (adminData) {
-
         if (data.startsWith('toggle_pais|') && adminData.isSuper) {
             const countryCode = data.split('|')[1];
             return sistemaRecargas.togglePaisAdmin(bot, db, chatId, query.message.message_id, countryCode);
@@ -1027,55 +1077,6 @@ bot.on('callback_query', async (query) => {
             return;
         }
 
-        if (data.startsWith('toggleban|') && (adminData.isSuper || adminData.perms.users)) {
-            const targetUid = data.split('|')[1];
-            const userSnap = await get(ref(db, `users/${targetUid}`));
-            if (userSnap.exists()) {
-                const isBanned = userSnap.val().banned || false;
-                await update(ref(db), { [`users/${targetUid}/banned`]: !isBanned });
-                bot.editMessageText(`✅ Estado actualizado. Usuario **${!isBanned ? 'Baneado 🔴' : 'Desbaneado 🟢'}**.`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
-                
-                notifySuperAdmin(adminUsername, tgId, 'Modificó Ban', `El usuario con ID ${targetUid} ahora está ${!isBanned ? 'Baneado 🔴' : 'Desbaneado 🟢'}`);
-            }
-            return;
-        }
-
-        if (data.startsWith('delprod|') && (adminData.isSuper || adminData.perms.products)) {
-            const prodId = data.split('|')[1];
-            await remove(ref(db, `products/${prodId}`));
-            bot.editMessageText('✅ Producto eliminado exitosamente de la tienda.', { chat_id: chatId, message_id: query.message.message_id });
-            
-            notifySuperAdmin(adminUsername, tgId, 'Eliminó Producto', `Producto con ID: ${prodId}`);
-            return;
-        }
-
-        if (data.startsWith('seledit|') && (adminData.isSuper || adminData.perms.products)) {
-            const prodId = data.split('|')[1];
-            const inlineKeyboard = [
-                [{ text: '✏️ Cambiar Nombre', callback_data: `editp|name|${prodId}` }],
-                [{ text: '💰 Cambiar Precio', callback_data: `editp|price|${prodId}` }],
-                [{ text: '⏳ Cambiar Garantía', callback_data: `editp|warr|${prodId}` }]
-            ];
-            bot.editMessageText('⚙️ ¿Qué deseas editar de este producto?', { chat_id: chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: inlineKeyboard } });
-            return;
-        }
-
-        if (data.startsWith('editp|') && (adminData.isSuper || adminData.perms.products)) {
-            const parts = data.split('|');
-            const field = parts[1]; 
-            const prodId = parts[2];
-            
-            userStates[chatId] = { step: `EDIT_PROD_${field.toUpperCase()}`, data: { prodId: prodId } };
-            
-            let msg = '';
-            if (field === 'name') msg = 'Escribe el **nuevo nombre** del producto:';
-            else if (field === 'price') msg = 'Escribe el **nuevo precio** en USD (ej: 3.5):';
-            else if (field === 'warr') msg = 'Escribe la **nueva garantía** en horas (ej: 24, o 0 para ilimitada):';
-            
-            bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
-            return;
-        }
-
         if (data.startsWith('rfnd|') && (adminData.isSuper || adminData.perms.refunds)) {
             const parts = data.split('|');
             const targetUid = parts[1];
@@ -1148,10 +1149,20 @@ bot.on('callback_query', async (query) => {
             return sistemaRecargas.rechazarRecarga(bot, db, chatId, query.message.message_id, receiptId, adminUsername, tgId, notifySuperAdmin);
         }
 
-        if (data.startsWith('stock|') && (adminData.isSuper || adminData.perms.products)) {
-            const prodId = data.split('|')[1];
-            userStates[chatId] = { step: 'ADD_STOCK_KEYS', data: { prodId: prodId } };
-            return bot.sendMessage(chatId, 'Pega todas las **Keys** ahora. Puedes separarlas por espacios, comas o saltos de línea:', { parse_mode: 'Markdown' });
+        // AGREGAR STOCK AL NUEVO SISTEMA (SELECCIONAR DURACIÓN)
+        if (data.startsWith('stkcat|') && (adminData.isSuper || adminData.perms.products)) {
+            const catId = data.split('|')[1];
+            const durSnap = await get(ref(db, `categories/${catId}/durations`));
+            if (!durSnap.exists()) return bot.sendMessage(chatId, '❌ Esta categoría no tiene duraciones creadas.');
+            let kb = [];
+            durSnap.forEach(d => kb.push([{ text: `⏱️ ${d.val().name}`, callback_data: `stkdur|${catId}|${d.key}` }]));
+            return bot.editMessageText(`📦 Selecciona la duración a la que agregarás Keys:`, { chat_id: chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: kb } });
+        }
+
+        if (data.startsWith('stkdur|') && (adminData.isSuper || adminData.perms.products)) {
+            const parts = data.split('|');
+            userStates[chatId] = { step: 'ADD_STOCK_KEYS_NEW', data: { catId: parts[1], durId: parts[2] } };
+            return bot.sendMessage(chatId, '🔑 Pega todas las **Keys** ahora. Puedes separarlas por espacios, comas o saltos de línea:', { parse_mode: 'Markdown' });
         }
     }
 
@@ -1170,72 +1181,87 @@ bot.on('callback_query', async (query) => {
         return sistemaRecargas.solicitarComprobante(bot, db, chatId, webUid, amountRequest, countryCode, userStates);
     }
 
-    if (data.startsWith('buy|')) {
-        const productId = data.split('|')[1];
-        
-        // Efecto de edición para la compra de producto
-        const waitMsg = await bot.sendMessage(chatId, '⚙️ Procesando transacción...');
+    // ============================================
+    // VER CATEGORÍAS Y NUEVO SISTEMA DE COMPRAS 
+    // ============================================
 
+    if (data.startsWith('viewcat|')) {
+        const catId = data.split('|')[1];
+        const catSnap = await get(ref(db, `categories/${catId}`));
+        if (!catSnap.exists()) return bot.answerCallbackQuery(query.id, { text: 'Categoría no existe' });
+        
+        const cat = catSnap.val();
+        let inlineKeyboard = [];
+        
+        if (cat.durations) {
+            Object.keys(cat.durations).forEach(durId => {
+                const dur = cat.durations[durId];
+                const stock = dur.keys ? Object.keys(dur.keys).length : 0;
+                if (stock > 0) {
+                    inlineKeyboard.push([{ text: `⏱️ ${dur.name} - $${dur.price} (${stock} disp)`, callback_data: `buy2|${catId}|${durId}` }]);
+                }
+            });
+        }
+        if (inlineKeyboard.length === 0) inlineKeyboard.push([{ text: 'Agotado por el momento', callback_data: 'nada' }]);
+        
+        bot.editMessageText(`📁 *${cat.name}*\n\nSelecciona la duración que deseas adquirir:`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+        return;
+    }
+
+    if (data.startsWith('buy2|')) {
+        const parts = data.split('|');
+        const catId = parts[1];
+        const durId = parts[2];
+        
+        const waitMsg = await bot.sendMessage(chatId, '⚙️ Procesando transacción...');
         const userSnap = await get(ref(db, `users/${webUid}`));
-        const prodSnap = await get(ref(db, `products/${productId}`));
+        const durSnap = await get(ref(db, `categories/${catId}/durations/${durId}`));
+        const catSnap = await get(ref(db, `categories/${catId}`));
         
         let webUser = userSnap.val();
-        let product = prodSnap.val();
-
-        if (!webUser) return bot.editMessageText('❌ Error: Usuario no encontrado en la base de datos.', { chat_id: chatId, message_id: waitMsg.message_id });
-        if (!product) return bot.editMessageText('❌ Lo sentimos, este producto ya no existe o fue retirado.', { chat_id: chatId, message_id: waitMsg.message_id });
-
-        let currentBalance = parseFloat(webUser.balance || 0);
-        let activeDiscount = parseFloat(webUser.active_discount || 0);
-
-        let finalPrice = product.price;
-        if (activeDiscount > 0) {
-            finalPrice = product.price - (product.price * (activeDiscount / 100));
-        }
-
-        if (currentBalance < finalPrice) return bot.editMessageText('❌ Saldo insuficiente para esta compra.', { chat_id: chatId, message_id: waitMsg.message_id });
+        let dur = durSnap.val();
         
-        if (product.keys && Object.keys(product.keys).length > 0) {
-            const firstKeyId = Object.keys(product.keys)[0];
-            const keyToDeliver = product.keys[firstKeyId];
-            const warrantyHours = product.warranty || 0; 
-            const keysRestantes = Object.keys(product.keys).length - 1; 
+        if (!dur || !dur.keys) return bot.editMessageText('❌ Producto agotado o retirado de la tienda.', { chat_id: chatId, message_id: waitMsg.message_id });
 
-            const updates = {};
-            updates[`products/${productId}/keys/${firstKeyId}`] = null; 
-            updates[`users/${webUid}/balance`] = currentBalance - finalPrice; 
-            
-            if (activeDiscount > 0) {
-                updates[`users/${webUid}/active_discount`] = null;
-            }
-            
-            const historyRef = push(ref(db, `users/${webUid}/history`));
-            updates[`users/${webUid}/history/${historyRef.key}`] = { 
-                product: product.name, 
-                key: keyToDeliver, 
-                price: finalPrice, 
-                date: Date.now(), 
-                refunded: false,
-                warrantyHours: warrantyHours 
-            }; 
+        let finalPrice = dur.price;
+        if (webUser.active_discount > 0) finalPrice = dur.price - (dur.price * (webUser.active_discount / 100));
 
-            await update(ref(db), updates);
-            
-            let exitoMsg = `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``;
-            if (activeDiscount > 0) {
-                exitoMsg += `\n\n🎟️ _Se aplicó tu descuento del ${activeDiscount}% a esta compra. Pagaste $${finalPrice.toFixed(2)} USD._`;
-            }
-            
-            bot.editMessageText(exitoMsg, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'Markdown' });
+        if ((webUser.balance || 0) < finalPrice) return bot.editMessageText('❌ Saldo insuficiente para esta compra.', { chat_id: chatId, message_id: waitMsg.message_id });
+        
+        const firstKeyId = Object.keys(dur.keys)[0];
+        const keyToDeliver = dur.keys[firstKeyId];
+        const keysRestantes = Object.keys(dur.keys).length - 1; 
 
-            if (keysRestantes <= 3) {
-                bot.sendMessage(SUPER_ADMIN_ID, `⚠️ *ALERTA DE STOCK BAJO*\n\nAl producto *${product.name}* le quedan solo **${keysRestantes}** keys disponibles.`, { parse_mode: 'Markdown' });
-            }
+        const updates = {};
+        updates[`categories/${catId}/durations/${durId}/keys/${firstKeyId}`] = null;
+        updates[`users/${webUid}/balance`] = webUser.balance - finalPrice;
+        
+        if (webUser.active_discount > 0) updates[`users/${webUid}/active_discount`] = null;
+        
+        const historyRef = push(ref(db, `users/${webUid}/history`));
+        updates[`users/${webUid}/history/${historyRef.key}`] = { 
+            product: `${catSnap.val().name} (${dur.name})`, 
+            key: keyToDeliver, 
+            price: finalPrice, 
+            date: Date.now(), 
+            refunded: false,
+            warrantyHours: dur.warranty || 0 
+        }; 
 
-        } else {
-            bot.editMessageText('❌ Producto agotado justo ahora.', { chat_id: chatId, message_id: waitMsg.message_id });
+        await update(ref(db), updates);
+        
+        let exitoMsg = `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``;
+        if (webUser.active_discount > 0) {
+            exitoMsg += `\n\n🎟️ _Se aplicó tu descuento del ${webUser.active_discount}% a esta compra. Pagaste $${finalPrice.toFixed(2)} USD._`;
         }
+
+        bot.editMessageText(exitoMsg, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'Markdown' });
+
+        if (keysRestantes <= 3) {
+            bot.sendMessage(SUPER_ADMIN_ID, `⚠️ *ALERTA DE STOCK BAJO*\n\nA la categoría *${catSnap.val().name}* (Duración: *${dur.name}*) le quedan solo **${keysRestantes}** keys disponibles.`, { parse_mode: 'Markdown' });
+        }
+        return;
     }
 });
 
-console.log('🤖 Bot LUCK XIT PRO V4 (Optimizado sin Sub-Bots) iniciado...');
+console.log('🤖 Bot LUCK XIT PRO V5 (Categorías Activas) iniciado...');
