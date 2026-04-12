@@ -199,7 +199,7 @@ bot.on('message', async (msg) => {
             };
             bot.sendPhoto(SUPER_ADMIN_ID, fileId, { caption: msgInfo, parse_mode: 'Markdown', reply_markup: refundKeyboard });
             userStates[chatId] = null;
-            return bot.sendMessage(chatId, '✅ Tu solicitud ha sido enviada.', keyboard);
+            return bot.sendMessage(chatId, '✅ Tu solicitud ha sido enviada a soporte.', keyboard);
         }
     }
 
@@ -691,6 +691,11 @@ bot.on('message', async (msg) => {
             return sistemaRecargas.procesarMonto(bot, chatId, text, state.data, userStates);
         }
     } 
+
+    if (text === '🔄 Solicitar Reembolso') {
+        userStates[chatId] = { step: 'WAITING_FOR_USER_REFUND_KEY', data: {} };
+        return bot.sendMessage(chatId, '🔄 *SOLICITUD DE REEMBOLSO*\n\nPor favor, pega y envíame la **Key exacta** que te está presentando problemas:', { parse_mode: 'Markdown' });
+    }
 
     if (text === '🔄 Resetear Key') {
         userStates[chatId] = { step: 'WAITING_FOR_RESET_KEY', data: {} };
@@ -1238,4 +1243,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log('🤖 Bot LUCK XIT PRO V4 (Optimizado sin Sub-Bots) iniciado...');
+console.log('🤖 Bot LUCK XIT PRO V5 (Definitivo) iniciado...');
