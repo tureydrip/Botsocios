@@ -134,11 +134,11 @@ function buildAdminKeyboard(adminData) {
         if (adminData.isSuper || adminData.perms[perm]) { row.push({ text }); if (row.length === 3) { kb.push(row); row = []; } }
     };
     
-    addBtn('📦 Crear Producto', '📝 Editar Producto', '🗑️ Eliminar Producto');
-    addBtn('🔑 Añadir Stock', 'products'); addBtn('💰 Añadir Saldo', 'balance'); addBtn('📢 Mensaje Global', 'broadcast');
-    addBtn('🔄 Revisar Reembolsos', 'refunds'); addBtn('🎟️ Crear Cupón', 'coupons'); addBtn('📊 Estadísticas', 'stats');
-    addBtn('📋 Ver Usuarios', 'stats'); addBtn('🔨 Gest. Usuarios', 'users'); addBtn('🛠️ Mantenimiento', 'maintenance');
-    addBtn('🏆 Gest. Rangos', 'products'); 
+    addBtn('📦 Crear Producto', 'products'); addBtn('📝 Editar Producto', 'products'); addBtn('🗑️ Eliminar Producto', 'products');
+    addBtn('🔑 Añadir Stock', 'products'); addBtn('🎁 Regalar Producto', 'products'); addBtn('💰 Añadir Saldo', 'balance'); 
+    addBtn('📢 Mensaje Global', 'broadcast'); addBtn('🔄 Revisar Reembolsos', 'refunds'); addBtn('🎟️ Crear Cupón', 'coupons'); 
+    addBtn('📊 Estadísticas', 'stats'); addBtn('📋 Ver Usuarios', 'stats'); addBtn('📜 Historial Usuario', 'stats'); 
+    addBtn('🔨 Gest. Usuarios', 'users'); addBtn('🛠️ Mantenimiento', 'maintenance'); addBtn('🏆 Gest. Rangos', 'products'); 
     
     if (row.length > 0) kb.push(row);
     let bottomRow = [];
@@ -277,8 +277,7 @@ bot.on('message', async (msg) => {
         if (state.step === 'WAITING_FOR_USER_REFUND_PROOF') {
             const foundData = state.data;
             const reason = msg.caption ? msg.caption : 'Sin razón especificada';
-            const dateStr = new Date(foundData.compra.date).toLocaleString('es-CO');
-
+            
             const msgInfo = `🔔 *NUEVA SOLICITUD DE REEMBOLSO*\n\n👤 *Usuario:* ${foundData.username}\n📦 *Producto:* ${foundData.compra.product}\n🔑 *Key:* \`${foundData.compra.key}\`\n💰 *Pagado:* $${parseFloat(foundData.compra.price).toFixed(2)} USD\n📝 *Motivo:* ${reason}`;
             const refundKeyboard = {
                 inline_keyboard: [
@@ -296,6 +295,67 @@ bot.on('message', async (msg) => {
 
     if (userStates[chatId]) {
         const state = userStates[chatId];
+
+        if (state.step === 'HISTORY_USER' && (adminData.isSuper || adminData.perms.stats)) {
+            const targetUsername = text.trim();
+            const usersSnap = await get(ref(db, 'users'));
+            let targetUser = null;
+            let targetUid = null;
+
+            usersSnap.forEach(u => {
+                if (u.val().username === targetUsername) { targetUser = u.val(); targetUid = u.key; }
+            });
+
+            if (!targetUser) return bot.sendMessage(chatId, '❌ Usuario no encontrado.');
+
+            if (!targetUser.history || Object.keys(targetUser.history).length === 0) {
+                userStates[chatId] = null;
+                return bot.sendMessage(chatId, `📜 *Historial de ${targetUsername}*\n\nEste usuario aún no ha realizado ninguna compra.`, { parse_mode: 'Markdown' });
+            }
+
+            let histText = `📜 *ÚLTIMAS COMPRAS DE ${targetUsername}*\n\n`;
+            const compras = Object.values(targetUser.history).sort((a, b) => b.date - a.date).slice(0, 15); // Mostrar últimas 15
+
+            compras.forEach((c, index) => {
+                const fecha = new Date(c.date).toLocaleString('es-CO');
+                const estado = c.refunded ? '🔴 REEMBOLSADO' : '🟢 OK';
+                histText += `*${index + 1}. ${c.product}*\n🔑 \`${c.key}\`\n💵 $${c.price} USD | 📅 ${fecha}\n🛡️ Estado: ${estado}\n\n`;
+            });
+
+            bot.sendMessage(chatId, histText, { parse_mode: 'Markdown' });
+            userStates[chatId] = null;
+            return;
+        }
+
+        if (state.step === 'GIFT_USER' && (adminData.isSuper || adminData.perms.products)) {
+            const targetUsername = text.trim();
+            const usersSnap = await get(ref(db, 'users'));
+            let targetUid = null;
+
+            usersSnap.forEach(u => {
+                if (u.val().username === targetUsername) targetUid = u.key;
+            });
+
+            if (!targetUid) return bot.sendMessage(chatId, '❌ Usuario no encontrado.');
+
+            const productsSnap = await get(ref(db, 'products'));
+            let inlineKeyboard = [];
+            if (productsSnap.exists()) {
+                productsSnap.forEach(child => {
+                    const p = child.val();
+                    const stock = p.keys ? Object.keys(p.keys).length : 0;
+                    if (stock > 0) {
+                        inlineKeyboard.push([{ text: `🎁 Dar ${p.name} (${stock} disp)`, callback_data: `gift|${targetUid}|${child.key}` }]);
+                    }
+                });
+            }
+
+            if (inlineKeyboard.length === 0) return bot.sendMessage(chatId, '❌ No hay stock de ningún producto para regalar.');
+
+            bot.sendMessage(chatId, `🎁 *REGALAR PRODUCTO A ${targetUsername}*\n\nSelecciona el producto que quieres enviarle totalmente gratis (se restará 1 Key del stock):`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+            userStates[chatId] = null;
+            return;
+        }
 
         if (state.step === 'WAITING_FOR_REF_CODE') {
             const inputCode = text.trim().toUpperCase();
@@ -578,6 +638,8 @@ bot.on('message', async (msg) => {
                     const warr = parseFloat(text);
                     if (isNaN(warr) || warr < 0) return bot.sendMessage(chatId, '❌ Garantía inválida. Usa números mayores o iguales a 0.');
                     updates[`products/${prodId}/warranty`] = warr;
+                } else if (fieldType === 'DUR') {
+                    updates[`products/${prodId}/duration`] = text;
                 }
                 
                 await update(ref(db), updates);
@@ -909,12 +971,10 @@ bot.on('message', async (msg) => {
             if (stock > 0) {
                 let showPrice = p.price;
                 
-                // Primero restamos el USD fijo del rango
                 if (rangoActual.descuento > 0) {
                     showPrice = Math.max(0, showPrice - rangoActual.descuento);
                 }
                 
-                // Luego quitamos el porcentaje del cupón si lo tiene
                 if (activeDiscount > 0) {
                     showPrice = showPrice - (showPrice * (activeDiscount / 100));
                 }
@@ -928,6 +988,19 @@ bot.on('message', async (msg) => {
     }
 
     if (adminData) {
+        
+        // --- NUEVO: Regalar Producto ---
+        if (text === '🎁 Regalar Producto' && (adminData.isSuper || adminData.perms.products)) {
+            userStates[chatId] = { step: 'GIFT_USER', data: {} };
+            return bot.sendMessage(chatId, '🎁 *REGALAR PRODUCTO (Sin cobrar)*\n\nEscribe el **Nombre de Usuario** exacto al que le quieres enviar una key:', { parse_mode: 'Markdown' });
+        }
+
+        // --- NUEVO: Ver Historial de Usuario ---
+        if (text === '📜 Historial Usuario' && (adminData.isSuper || adminData.perms.stats)) {
+            userStates[chatId] = { step: 'HISTORY_USER', data: {} };
+            return bot.sendMessage(chatId, '📜 *HISTORIAL DE COMPRAS*\n\nEscribe el **Nombre de Usuario** exacto para ver las keys que ha comprado y su estado:', { parse_mode: 'Markdown' });
+        }
+
         if (text === '🏆 Gest. Rangos' && (adminData.isSuper || adminData.perms.products)) {
             const rangos = await getRanks(db);
             let inlineKeyboard = [];
@@ -1131,6 +1204,66 @@ bot.on('callback_query', async (query) => {
 
     if (adminData) {
 
+        // --- Lógica Callback de Regalar Producto ---
+        if (data.startsWith('gift|') && (adminData.isSuper || adminData.perms.products)) {
+            const parts = data.split('|');
+            const targetUid = parts[1];
+            const prodId = parts[2];
+
+            bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+
+            const prodSnap = await get(ref(db, `products/${prodId}`));
+            const targetUserSnap = await get(ref(db, `users/${targetUid}`));
+
+            if (!prodSnap.exists() || !targetUserSnap.exists()) {
+                return bot.sendMessage(chatId, '❌ Producto o usuario no encontrado.');
+            }
+
+            const product = prodSnap.val();
+            const targetUser = targetUserSnap.val();
+
+            if (product.keys && Object.keys(product.keys).length > 0) {
+                const firstKeyId = Object.keys(product.keys)[0];
+                const keyToDeliver = product.keys[firstKeyId];
+                const warrantyHours = product.warranty || 0; 
+                const keysRestantes = Object.keys(product.keys).length - 1; 
+
+                const updates = {};
+                updates[`products/${prodId}/keys/${firstKeyId}`] = null; 
+                
+                const historyRef = push(ref(db, `users/${targetUid}/history`));
+                updates[`users/${targetUid}/history/${historyRef.key}`] = { 
+                    product: product.name, 
+                    key: keyToDeliver, 
+                    price: 0, // 0 porque fue un regalo
+                    date: Date.now(), 
+                    refunded: false,
+                    warrantyHours: warrantyHours 
+                }; 
+
+                await update(ref(db), updates);
+
+                bot.sendMessage(chatId, `✅ *REGALO ENVIADO*\n\nLe has dado una key de *${product.name}* al usuario *${targetUser.username}*.\n🔑 Key entregada: \`${keyToDeliver}\``, { parse_mode: 'Markdown' });
+
+                const telegramAuthSnap = await get(ref(db, 'telegram_auth'));
+                let targetTgId = null;
+                if (telegramAuthSnap.exists()) {
+                    telegramAuthSnap.forEach(child => { if (child.val() === targetUid) targetTgId = child.key; });
+                }
+
+                if (targetTgId) {
+                    bot.sendMessage(targetTgId, `🎁 *¡TIENES UN REGALO DEL STAFF!*\n\nUn administrador te ha enviado el producto *${product.name}* totalmente gratis.\n\n🔑 Tu Key es:\n\`${keyToDeliver}\``, { parse_mode: 'Markdown' });
+                }
+
+                if (keysRestantes <= 3) {
+                    bot.sendMessage(SUPER_ADMIN_ID, `⚠️ *ALERTA DE STOCK BAJO*\n\nAl producto *${product.name}* le quedan solo **${keysRestantes}** keys disponibles.`, { parse_mode: 'Markdown' });
+                }
+            } else {
+                bot.sendMessage(chatId, '❌ El producto se quedó sin stock antes de poder regalarlo.');
+            }
+            return;
+        }
+
         if (data.startsWith('editrank|') && (adminData.isSuper || adminData.perms.products)) {
             const rankId = data.split('|')[1];
             const snap = await get(ref(db, `settings/ranks/${rankId}`));
@@ -1272,6 +1405,7 @@ bot.on('callback_query', async (query) => {
             const inlineKeyboard = [
                 [{ text: '✏️ Cambiar Nombre', callback_data: `editp|name|${prodId}` }],
                 [{ text: '💰 Cambiar Precio', callback_data: `editp|price|${prodId}` }],
+                [{ text: '⏱️ Cambiar Duración', callback_data: `editp|dur|${prodId}` }],
                 [{ text: '⏳ Cambiar Garantía', callback_data: `editp|warr|${prodId}` }]
             ];
             bot.editMessageText('⚙️ ¿Qué deseas editar de este producto?', { chat_id: chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: inlineKeyboard } });
@@ -1289,6 +1423,7 @@ bot.on('callback_query', async (query) => {
             if (field === 'name') msg = 'Escribe el **nuevo nombre** del producto:';
             else if (field === 'price') msg = 'Escribe el **nuevo precio** en USD (ej: 3.5):';
             else if (field === 'warr') msg = 'Escribe la **nueva garantía** en horas (ej: 24, o 0 para ilimitada):';
+            else if (field === 'dur') msg = 'Escribe la **nueva duración** del producto (ej: 24 Horas o Mensual):';
             
             bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
             return;
@@ -1470,4 +1605,4 @@ module.exports = {
     verificarBonoReferido
 };
 
-console.log('🤖 Bot LUCK XIT PRO V4 (Rangos USD y Referidos) iniciado...');
+console.log('🤖 Bot LUCK XIT PRO V4 (Edición Expandida + Historial + Regalos) iniciado...');
