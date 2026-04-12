@@ -220,8 +220,8 @@ bot.onText(/\/start(?: (.*))?/, async (msg, match) => {
     const adminData = await getAdminData(tgId);
     const keyboard = adminData ? buildAdminKeyboard(adminData) : userKeyboard;
     
-    let greeting = `🌌 Bienvenido a LUCK XIT, *${webUser.username}*.`;
-    if (adminData) greeting = adminData.isSuper ? `👑 ¡Bienvenido Super Admin LUCK XIT, *${webUser.username}*!` : `🛡️ Bienvenido Admin, *${webUser.username}*.`;
+    let greeting = `🌌 Bienvenido a SociosXit, *${webUser.username}*.`;
+    if (adminData) greeting = adminData.isSuper ? `👑 ¡Bienvenido Super Admin SociosXit, *${webUser.username}*!` : `🛡️ Bienvenido Admin, *${webUser.username}*.`;
 
     bot.sendMessage(chatId, `${greeting}\nUsa los botones de abajo para navegar.`, { parse_mode: 'Markdown', ...keyboard });
 });
@@ -257,7 +257,7 @@ bot.on('message', async (msg) => {
             await update(ref(db), { [`users/${webUid}/banned`]: false, [`users/${webUid}/banUntil`]: null });
         }
 
-        if (isBanned) return bot.sendMessage(chatId, '🚫 *ESTÁS BANEADO*\n\nHas sido bloqueado del sistema LUCK XIT. Contacta a soporte.', { parse_mode: 'Markdown' });
+        if (isBanned) return bot.sendMessage(chatId, '🚫 *ESTÁS BANEADO*\n\nHas sido bloqueado del sistema SociosXit. Contacta a soporte.', { parse_mode: 'Markdown' });
         if (isMaintenance) return bot.sendMessage(chatId, '🛠️ *MODO MANTENIMIENTO ACTIVO*\n\nEstamos haciendo mejoras. Volveremos pronto.', { parse_mode: 'Markdown' });
     }
 
@@ -711,7 +711,7 @@ bot.on('message', async (msg) => {
                 if (telegramAuthSnap.exists()) {
                     telegramAuthSnap.forEach(child => {
                         const targetTgId = child.key;
-                        bot.sendMessage(targetTgId, `📢 *Anuncio Oficial LUCK XIT*\n\n${text}`, { parse_mode: 'Markdown' }).catch(() => {});
+                        bot.sendMessage(targetTgId, `📢 *Anuncio Oficial SociosXit*\n\n${text}`, { parse_mode: 'Markdown' }).catch(() => {});
                         count++;
                     });
                 }
@@ -763,7 +763,7 @@ bot.on('message', async (msg) => {
                     }
 
                     if (targetTgId) {
-                        bot.sendMessage(targetTgId, `🎉 Un administrador LUCK XIT te ha depositado: *$${amount} USD* de saldo.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
+                        bot.sendMessage(targetTgId, `🎉 Un administrador SociosXit te ha depositado: *$${amount} USD* de saldo.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
                     }
                     
                     notifySuperAdmin(webUser.username, tgId, 'Añadió Saldo Manual', `Monto: $${amount} USD al usuario: ${state.data.targetUser}`);
@@ -893,7 +893,7 @@ bot.on('message', async (msg) => {
         
         const botInfo = await bot.getMe();
         
-        let msgRef = `🤝 *SISTEMA DE REFERIDOS LUCK XIT*\n\n` +
+        let msgRef = `🤝 *SISTEMA DE REFERIDOS SociosXit*\n\n` +
                      `¡Invita a tus amigos y gana saldo gratis para comprar keys! Por cada persona que se una con tu enlace y recargue **$5 USD** por primera vez, ¡tú recibirás **$2 USD** en automático!\n\n` +
                      `🎟️ *Tu Código:* \`${miCodigo}\`\n` +
                      `🔗 *Tu Enlace de Invitación:*\n` +
@@ -903,7 +903,7 @@ bot.on('message', async (msg) => {
             msgRef += `\n\n👤 _Fuiste invitado al bot por el código: ${webUser.referredBy}_`;
         } else {
             userStates[chatId] = { step: 'WAITING_FOR_REF_CODE', data: {} };
-            msgRef += `\n\n✍️ *¿Alguien te invitó a LUCK XIT?*\nEscribe su código de referido ahora mismo para apoyarlo (o usa los botones abajo para salir).`;
+            msgRef += `\n\n✍️ *¿Alguien te invitó a SociosXit?*\nEscribe su código de referido ahora mismo para apoyarlo (o usa los botones abajo para salir).`;
         }
         
         return bot.sendMessage(chatId, msgRef, { parse_mode: 'Markdown' });
@@ -928,7 +928,7 @@ bot.on('message', async (msg) => {
         const totalGastado = calcularGastoTotal(webUser.history);
         const rangoActual = await obtenerRango(db, totalGastado);
         
-        let msgPerfil = `👤 *PERFIL LUCK XIT*\n\n` +
+        let msgPerfil = `👤 *PERFIL SociosXit*\n\n` +
                         `Usuario: ${webUser.username}\n` +
                         `💰 Saldo: *$${parseFloat(webUser.balance).toFixed(2)} USD*\n\n` +
                         `🏆 *Rango Actual:* ${rangoActual.nombre}\n` +
@@ -1071,7 +1071,7 @@ bot.on('message', async (msg) => {
                 });
             }
             
-            const msgStats = `📊 *DASHBOARD LUCK XIT*\n\n` +
+            const msgStats = `📊 *DASHBOARD SociosXit*\n\n` +
             `📅 *ESTADÍSTICAS DE HOY*\n` +
             `💵 Recargado Hoy: *$${todayRecharges.toFixed(2)} USD*\n` +
             `🛍️ Ventas Hoy: *${todaySalesCount}* ($${todaySalesUsd.toFixed(2)} USD)\n\n` +
@@ -1605,4 +1605,4 @@ module.exports = {
     verificarBonoReferido
 };
 
-console.log('🤖 Bot LUCK XIT PRO V4 (Edición Expandida + Historial + Regalos) iniciado...');
+console.log('🤖 Bot SociosXit PRO V4 (Edición Expandida + Historial + Regalos) iniciado...');
