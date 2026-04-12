@@ -21,6 +21,48 @@ const PaisesConfig = {
     "VE": { flag: "🇻🇪", name: "Venezuela", rate: 650, currency: "VES", methods: "🟡 *Pago Móvil* (💵 EFECTIVO)\n📋 Pago móvil: `0102 04128975265 31303430`\n💡 Pago móvil interbancario (Dólar a Binance)" }
 };
 
+// --- ESCÁNER DE REFERIDOS INTEGRADO EN RECARGAS ---
+async function verificarBonoReferido(db, bot, targetUid, amountAdded) {
+    const uSnap = await get(ref(db, `users/${targetUid}`));
+    if (!uSnap.exists()) return;
+    const user = uSnap.val();
+    
+    if (user.referredBy && !user.referralRewarded) {
+        let totalRecharged = amountAdded; 
+        if (user.recharges) {
+            Object.values(user.recharges).forEach(r => totalRecharged += parseFloat(r.amount || 0));
+        }
+        
+        if (totalRecharged >= 5 || amountAdded >= 5) {
+            const inviterCode = user.referredBy;
+            const codeSnap = await get(ref(db, `referral_codes/${inviterCode}`));
+            
+            if (codeSnap.exists()) {
+                const inviterUid = codeSnap.val();
+                const inviterSnap = await get(ref(db, `users/${inviterUid}`));
+                
+                if (inviterSnap.exists()) {
+                    const inviterBal = parseFloat(inviterSnap.val().balance || 0);
+                    
+                    await update(ref(db), {
+                        [`users/${inviterUid}/balance`]: inviterBal + 2,
+                        [`users/${targetUid}/referralRewarded`]: true
+                    });
+                    
+                    const tgAuthSnap = await get(ref(db, `telegram_auth`));
+                    let inviterTgId = null;
+                    tgAuthSnap.forEach(child => { if (child.val() === inviterUid) inviterTgId = child.key; });
+                    
+                    if (inviterTgId) {
+                        bot.sendMessage(inviterTgId, `🎉 *¡BONO DE REFERIDO!*\n\nTu referido *${user.username}* acaba de realizar su primera recarga de $5 USD o más.\n🎁 Acabas de recibir *$2.00 USD* de saldo gratis.\n💰 Tu nuevo saldo es: *$${(inviterBal + 2).toFixed(2)} USD*`, { parse_mode: 'Markdown' }).catch(()=>{});
+                    }
+                }
+            }
+        }
+    }
+}
+// --------------------------------------------------
+
 module.exports = {
     iniciarRecarga: async (bot, db, chatId, webUser, userStates) => {
         let totalRecharged = 0;
@@ -202,6 +244,10 @@ module.exports = {
             bot.sendMessage(targetTgId, `🎉 *¡RECARGA APROBADA!*\n\nTu pago ha sido confirmado. Se han añadido *$${amount} USD* a tu cuenta.\n💰 Nuevo saldo: *$${nuevoSaldo.toFixed(2)} USD*`, { parse_mode: 'Markdown' });
             
             notifySuperAdmin(adminUsername, adminTgId, 'Aprobó Recarga', `Acreditó $${amount} USD a la cuenta de ${userSnap.val().username}`);
+
+            // === AQUI SE DISPARA LA RECOMPENSA SI ES SU PRIMERA RECARGA (O ACUMULADA) DE $5 ===
+            await verificarBonoReferido(db, bot, targetWebUid, amount);
+
         } else {
             bot.sendMessage(chatId, '❌ Hubo un error buscando al usuario en Firebase.');
         }
