@@ -729,23 +729,26 @@ bot.on('message', async (msg) => {
         if (!productsSnap.exists()) return bot.sendMessage(chatId, 'Tienda vacía en este momento.');
         
         const activeDiscount = parseFloat(webUser.active_discount || 0);
-        let header = `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto:`;
+        let header = `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto para ver sus duraciones:`;
         if (activeDiscount > 0) {
-            header = `🛒 *ARSENAL DISPONIBLE*\n🎟️ Tienes un **${activeDiscount}% de descuento** que se aplicará automáticamente a tu compra.\n\nSelecciona un producto:`;
+            header = `🛒 *ARSENAL DISPONIBLE*\n🎟️ Tienes un **${activeDiscount}% de descuento**.\n\nSelecciona un producto:`;
         }
 
-        let inlineKeyboard = [];
+        const groupedProducts = {};
         productsSnap.forEach(child => {
             const p = child.val();
             const stock = p.keys ? Object.keys(p.keys).length : 0;
             if (stock > 0) {
-                let showPrice = p.price;
-                if (activeDiscount > 0) {
-                    showPrice = p.price - (p.price * (activeDiscount / 100));
-                }
-                inlineKeyboard.push([{ text: `Comprar ${p.name} - $${showPrice.toFixed(2)} (${stock} disp)`, callback_data: `buy|${child.key}` }]);
+                if (!groupedProducts[p.name]) groupedProducts[p.name] = 0;
+                groupedProducts[p.name] += stock; 
             }
         });
+
+        let inlineKeyboard = [];
+        for (const [name, totalStock] of Object.entries(groupedProducts)) {
+            inlineKeyboard.push([{ text: `📦 ${name} (${totalStock} disp)`, callback_data: `vprod|${name.substring(0, 40)}` }]);
+        }
+
         if(inlineKeyboard.length === 0) return bot.sendMessage(chatId, '❌ Todos los productos están agotados.');
         
         return bot.sendMessage(chatId, header, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
@@ -917,6 +920,63 @@ bot.on('callback_query', async (query) => {
     const webUser = adminUserSnap.val();
 
     const adminData = await getAdminData(tgId);
+
+    if (data.startsWith('vprod|')) {
+        const targetName = data.substring(6);
+        const productsSnap = await get(ref(db, 'products'));
+        const activeDiscount = parseFloat(webUser.active_discount || 0);
+        
+        let inlineKeyboard = [];
+
+        productsSnap.forEach(child => {
+            const p = child.val();
+            if (p.name.substring(0, 40) === targetName) {
+                const stock = p.keys ? Object.keys(p.keys).length : 0;
+                if (stock > 0) {
+                    let showPrice = p.price;
+                    if (activeDiscount > 0) {
+                        showPrice = p.price - (p.price * (activeDiscount / 100));
+                    }
+                    inlineKeyboard.push([{ text: `⏳ ${p.duration} - $${showPrice.toFixed(2)} (${stock} disp)`, callback_data: `buy|${child.key}` }]);
+                }
+            }
+        });
+
+        inlineKeyboard.push([{ text: '🔙 Volver a la Tienda', callback_data: `back_tienda` }]);
+
+        return bot.editMessageText(`📦 *${targetName}*\n\nSelecciona la duración que deseas adquirir:`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+    }
+
+    if (data === 'back_tienda') {
+        const productsSnap = await get(ref(db, 'products'));
+        const activeDiscount = parseFloat(webUser.active_discount || 0);
+        
+        let header = `🛒 *ARSENAL DISPONIBLE*\nSelecciona un producto para ver sus duraciones:`;
+        if (activeDiscount > 0) {
+            header = `🛒 *ARSENAL DISPONIBLE*\n🎟️ Tienes un **${activeDiscount}% de descuento**.\n\nSelecciona un producto:`;
+        }
+
+        const groupedProducts = {};
+        if (productsSnap.exists()) {
+            productsSnap.forEach(child => {
+                const p = child.val();
+                const stock = p.keys ? Object.keys(p.keys).length : 0;
+                if (stock > 0) {
+                    if (!groupedProducts[p.name]) groupedProducts[p.name] = 0;
+                    groupedProducts[p.name] += stock;
+                }
+            });
+        }
+
+        let inlineKeyboard = [];
+        for (const [name, totalStock] of Object.entries(groupedProducts)) {
+            inlineKeyboard.push([{ text: `📦 ${name} (${totalStock} disp)`, callback_data: `vprod|${name.substring(0, 40)}` }]);
+        }
+
+        if(inlineKeyboard.length === 0) return bot.editMessageText('❌ Todos los productos están agotados.', { chat_id: chatId, message_id: query.message.message_id });
+
+        return bot.editMessageText(header, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+    }
 
     if (adminData && adminData.isSuper) {
 
@@ -1243,4 +1303,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log('🤖 Bot LUCK XIT PRO V5 (Definitivo) iniciado...');
+console.log('🤖 Bot LUCK XIT PRO V5 (Tienda Agrupada por Nombre) iniciado...');
