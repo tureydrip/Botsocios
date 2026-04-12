@@ -445,6 +445,8 @@ bot.on('message', async (msg) => {
                 let updates = {};
                 if (fieldType === 'NAME') {
                     updates[`products/${prodId}/name`] = text;
+                } else if (fieldType === 'DURATION') { // <-- NUEVO: Guarda la nueva duración
+                    updates[`products/${prodId}/duration`] = text;
                 } else if (fieldType === 'PRICE') {
                     const price = parseFloat(text);
                     if (isNaN(price)) return bot.sendMessage(chatId, '❌ Precio inválido. Usa números.');
@@ -1118,8 +1120,9 @@ bot.on('callback_query', async (query) => {
             const prodId = data.split('|')[1];
             const inlineKeyboard = [
                 [{ text: '✏️ Cambiar Nombre', callback_data: `editp|name|${prodId}` }],
+                [{ text: '⏳ Cambiar Duración', callback_data: `editp|duration|${prodId}` }],
                 [{ text: '💰 Cambiar Precio', callback_data: `editp|price|${prodId}` }],
-                [{ text: '⏳ Cambiar Garantía', callback_data: `editp|warr|${prodId}` }]
+                [{ text: '🛡️ Cambiar Garantía', callback_data: `editp|warr|${prodId}` }]
             ];
             bot.editMessageText('⚙️ ¿Qué deseas editar de este producto?', { chat_id: chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: inlineKeyboard } });
             return;
@@ -1133,7 +1136,8 @@ bot.on('callback_query', async (query) => {
             userStates[chatId] = { step: `EDIT_PROD_${field.toUpperCase()}`, data: { prodId: prodId } };
             
             let msg = '';
-            if (field === 'name') msg = 'Escribe el **nuevo nombre** del producto:';
+            if (field === 'name') msg = 'Escribe el **nuevo nombre** del producto (Ej: CUBAN MODS 🟠):';
+            else if (field === 'duration') msg = 'Escribe la **nueva duración** (Ej: 1 Día, 15 Días, Mensual):';
             else if (field === 'price') msg = 'Escribe el **nuevo precio** en USD (ej: 3.5):';
             else if (field === 'warr') msg = 'Escribe la **nueva garantía** en horas (ej: 24, o 0 para ilimitada):';
             
@@ -1303,4 +1307,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log('🤖 Bot LUCK XIT PRO V5 (Tienda Agrupada por Nombre) iniciado...');
+console.log('🤖 Bot LUCK XIT PRO V5 (Edición Completa desde Bot) iniciado...');
