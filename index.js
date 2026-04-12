@@ -445,7 +445,7 @@ bot.on('message', async (msg) => {
                 let updates = {};
                 if (fieldType === 'NAME') {
                     updates[`products/${prodId}/name`] = text;
-                } else if (fieldType === 'DURATION') { // <-- NUEVO: Guarda la nueva duración
+                } else if (fieldType === 'DURATION') { 
                     updates[`products/${prodId}/duration`] = text;
                 } else if (fieldType === 'PRICE') {
                     const price = parseFloat(text);
@@ -590,20 +590,21 @@ bot.on('message', async (msg) => {
                 return;
             }
 
+            // CREACIÓN DE PRODUCTOS (NUEVO FLUJO CON DURACIÓN)
             if (state.step === 'CREATE_PROD_NAME' && (adminData.isSuper || adminData.perms.products)) {
                 state.data.name = text;
+                state.step = 'CREATE_PROD_DURATION';
+                return bot.sendMessage(chatId, `📦 Producto: *${text}*\n\nAhora escribe la **Duración** (Ej: 1 Día, Mensual, 15 Días):`, { parse_mode: 'Markdown' });
+            }
+            if (state.step === 'CREATE_PROD_DURATION' && (adminData.isSuper || adminData.perms.products)) {
+                state.data.duration = text;
                 state.step = 'CREATE_PROD_PRICE';
-                return bot.sendMessage(chatId, 'Ingresa el **precio** en USD (ej: 2.5):', { parse_mode: 'Markdown' });
+                return bot.sendMessage(chatId, `⏳ Duración: *${text}*\n\nIngresa el **Precio** en USD (ej: 2.5):`, { parse_mode: 'Markdown' });
             }
             if (state.step === 'CREATE_PROD_PRICE' && (adminData.isSuper || adminData.perms.products)) {
                 const price = parseFloat(text);
                 if (isNaN(price)) return bot.sendMessage(chatId, '❌ Precio inválido. Usa números.');
                 state.data.price = price;
-                state.step = 'CREATE_PROD_DURATION';
-                return bot.sendMessage(chatId, 'Ingresa la **duración** (ej: 24 horas o Mensual):', { parse_mode: 'Markdown' });
-            }
-            if (state.step === 'CREATE_PROD_DURATION' && (adminData.isSuper || adminData.perms.products)) {
-                state.data.duration = text;
                 state.step = 'CREATE_PROD_WARRANTY';
                 return bot.sendMessage(chatId, 'Ingresa el **tiempo de garantía** en horas (ej: 24).\n\n_(Si no quieres que tenga límite de tiempo para reembolso, escribe **0**)_:', { parse_mode: 'Markdown' });
             }
@@ -619,9 +620,9 @@ bot.on('message', async (msg) => {
                     warranty: warranty 
                 });
                 
-                bot.sendMessage(chatId, `✅ Producto *${state.data.name}* creado exitosamente con ${warranty > 0 ? warranty + ' hrs de garantía' : 'garantía ilimitada'}.`, { parse_mode: 'Markdown', ...keyboard });
+                bot.sendMessage(chatId, `✅ Producto *${state.data.name}* (${state.data.duration}) creado exitosamente.`, { parse_mode: 'Markdown', ...keyboard });
                 
-                notifySuperAdmin(webUser.username, tgId, 'Creó un Producto', `Nombre: ${state.data.name} | Precio: $${state.data.price} | Garantía: ${warranty}h`);
+                notifySuperAdmin(webUser.username, tgId, 'Creó un Producto', `Nombre: ${state.data.name} | Duración: ${state.data.duration} | Precio: $${state.data.price} | Garantía: ${warranty}h`);
                 userStates[chatId] = null;
                 return;
             }
@@ -726,6 +727,7 @@ bot.on('message', async (msg) => {
         return sistemaRecargas.iniciarRecarga(bot, db, chatId, webUser, userStates);
     }
 
+    // TIENDA ORGANIZADA POR CARPETAS
     if (text === '🛒 Tienda') {
         const productsSnap = await get(ref(db, 'products'));
         if (!productsSnap.exists()) return bot.sendMessage(chatId, 'Tienda vacía en este momento.');
@@ -859,7 +861,7 @@ bot.on('message', async (msg) => {
             
             let inlineKeyboard = [];
             productsSnap.forEach(child => {
-                inlineKeyboard.push([{ text: `❌ Eliminar: ${child.val().name}`, callback_data: `delprod|${child.key}` }]);
+                inlineKeyboard.push([{ text: `❌ Eliminar: ${child.val().name} (${child.val().duration || 'N/A'})`, callback_data: `delprod|${child.key}` }]);
             });
             return bot.sendMessage(chatId, `🗑️ *ELIMINAR PRODUCTO*\nSelecciona el producto que deseas eliminar permanentemente:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
         }
@@ -870,7 +872,7 @@ bot.on('message', async (msg) => {
             
             let inlineKeyboard = [];
             productsSnap.forEach(child => {
-                inlineKeyboard.push([{ text: `✏️ Editar: ${child.val().name}`, callback_data: `seledit|${child.key}` }]);
+                inlineKeyboard.push([{ text: `✏️ Editar: ${child.val().name} (${child.val().duration || 'N/A'})`, callback_data: `seledit|${child.key}` }]);
             });
             return bot.sendMessage(chatId, `📝 *EDITAR PRODUCTO*\nSelecciona el producto que deseas modificar:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
         }
@@ -892,7 +894,7 @@ bot.on('message', async (msg) => {
         
         if (text === '📦 Crear Producto' && (adminData.isSuper || adminData.perms.products)) {
             userStates[chatId] = { step: 'CREATE_PROD_NAME', data: {} };
-            return bot.sendMessage(chatId, 'Escribe el **Nombre** del nuevo producto:', { parse_mode: 'Markdown' });
+            return bot.sendMessage(chatId, 'Escribe el **Nombre de la Categoría** (Ej: LUCK XIT PRO):', { parse_mode: 'Markdown' });
         }
 
         if (text === '🔑 Añadir Stock' && (adminData.isSuper || adminData.perms.products)) {
@@ -901,7 +903,7 @@ bot.on('message', async (msg) => {
             
             let inlineKeyboard = [];
             productsSnap.forEach(child => {
-                inlineKeyboard.push([{ text: `➕ Stock a: ${child.val().name}`, callback_data: `stock|${child.key}` }]);
+                inlineKeyboard.push([{ text: `➕ Stock a: ${child.val().name} (${child.val().duration || 'N/A'})`, callback_data: `stock|${child.key}` }]);
             });
             return bot.sendMessage(chatId, `📦 Selecciona a qué producto vas a agregarle Keys:`, { reply_markup: { inline_keyboard: inlineKeyboard } });
         }
@@ -923,6 +925,7 @@ bot.on('callback_query', async (query) => {
 
     const adminData = await getAdminData(tgId);
 
+    // SUB-MENU DE TIENDA (Duraciones)
     if (data.startsWith('vprod|')) {
         const targetName = data.substring(6);
         const productsSnap = await get(ref(db, 'products'));
@@ -939,7 +942,7 @@ bot.on('callback_query', async (query) => {
                     if (activeDiscount > 0) {
                         showPrice = p.price - (p.price * (activeDiscount / 100));
                     }
-                    inlineKeyboard.push([{ text: `⏳ ${p.duration} - $${showPrice.toFixed(2)} (${stock} disp)`, callback_data: `buy|${child.key}` }]);
+                    inlineKeyboard.push([{ text: `⏳ ${p.duration || 'Normal'} - $${showPrice.toFixed(2)} (${stock} disp)`, callback_data: `buy|${child.key}` }]);
                 }
             }
         });
@@ -1119,7 +1122,7 @@ bot.on('callback_query', async (query) => {
         if (data.startsWith('seledit|') && (adminData.isSuper || adminData.perms.products)) {
             const prodId = data.split('|')[1];
             const inlineKeyboard = [
-                [{ text: '✏️ Cambiar Nombre', callback_data: `editp|name|${prodId}` }],
+                [{ text: '✏️ Cambiar Nombre (Carpeta)', callback_data: `editp|name|${prodId}` }],
                 [{ text: '⏳ Cambiar Duración', callback_data: `editp|duration|${prodId}` }],
                 [{ text: '💰 Cambiar Precio', callback_data: `editp|price|${prodId}` }],
                 [{ text: '🛡️ Cambiar Garantía', callback_data: `editp|warr|${prodId}` }]
@@ -1136,7 +1139,7 @@ bot.on('callback_query', async (query) => {
             userStates[chatId] = { step: `EDIT_PROD_${field.toUpperCase()}`, data: { prodId: prodId } };
             
             let msg = '';
-            if (field === 'name') msg = 'Escribe el **nuevo nombre** del producto (Ej: CUBAN MODS 🟠):';
+            if (field === 'name') msg = 'Escribe el **nuevo nombre de Categoría** del producto (Ej: LUCK XIT PRO):';
             else if (field === 'duration') msg = 'Escribe la **nueva duración** (Ej: 1 Día, 15 Días, Mensual):';
             else if (field === 'price') msg = 'Escribe el **nuevo precio** en USD (ej: 3.5):';
             else if (field === 'warr') msg = 'Escribe la **nueva garantía** en horas (ej: 24, o 0 para ilimitada):';
@@ -1242,7 +1245,6 @@ bot.on('callback_query', async (query) => {
     if (data.startsWith('buy|')) {
         const productId = data.split('|')[1];
         
-        // Efecto de edición para la compra de producto
         const waitMsg = await bot.sendMessage(chatId, '⚙️ Procesando transacción...');
 
         const userSnap = await get(ref(db, `users/${webUid}`));
@@ -1281,6 +1283,7 @@ bot.on('callback_query', async (query) => {
             const historyRef = push(ref(db, `users/${webUid}/history`));
             updates[`users/${webUid}/history/${historyRef.key}`] = { 
                 product: product.name, 
+                duration: product.duration || 'N/A', // Guardamos duración en historial
                 key: keyToDeliver, 
                 price: finalPrice, 
                 date: Date.now(), 
@@ -1290,7 +1293,7 @@ bot.on('callback_query', async (query) => {
 
             await update(ref(db), updates);
             
-            let exitoMsg = `✅ *¡COMPRA EXITOSA!*\n\nTu Key es:\n\n\`${keyToDeliver}\``;
+            let exitoMsg = `✅ *¡COMPRA EXITOSA!*\n\n📦 Producto: ${product.name}\n⏳ Duración: ${product.duration || 'N/A'}\n\nTu Key es:\n\n\`${keyToDeliver}\``;
             if (activeDiscount > 0) {
                 exitoMsg += `\n\n🎟️ _Se aplicó tu descuento del ${activeDiscount}% a esta compra. Pagaste $${finalPrice.toFixed(2)} USD._`;
             }
@@ -1298,7 +1301,7 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText(exitoMsg, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'Markdown' });
 
             if (keysRestantes <= 3) {
-                bot.sendMessage(SUPER_ADMIN_ID, `⚠️ *ALERTA DE STOCK BAJO*\n\nAl producto *${product.name}* le quedan solo **${keysRestantes}** keys disponibles.`, { parse_mode: 'Markdown' });
+                bot.sendMessage(SUPER_ADMIN_ID, `⚠️ *ALERTA DE STOCK BAJO*\n\nAl producto *${product.name} (${product.duration})* le quedan solo **${keysRestantes}** keys disponibles.`, { parse_mode: 'Markdown' });
             }
 
         } else {
@@ -1307,4 +1310,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log('🤖 Bot LUCK XIT PRO V5 (Edición Completa desde Bot) iniciado...');
+console.log('🤖 Bot LUCK XIT PRO V6 (100% COMPLETO) iniciado...');
