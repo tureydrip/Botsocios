@@ -3,11 +3,87 @@ const { initializeApp } = require('firebase/app');
 const { getDatabase, ref, get, update, push, set, remove } = require('firebase/database');
 const sistemaRecargas = require('./recargas');
 
+// --- INTEGRACIÓN WHATSAPP (BAILEYS) ---
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require('@whiskeysockets/baileys');
+const pino = require('pino');
+
+let waSocket = null;
+let isWaConnected = false;
+const waVerificationCodes = {}; // Almacena códigos temporales para verificar usuarios
+
+async function initWA(pairNumber = null, tgChatId = null, botInstance = null) {
+    const { state, saveCreds } = await useMultiFileAuthState('wa_auth_session');
+    waSocket = makeWASocket({
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        auth: state,
+        browser: ['Ubuntu', 'Chrome', '20.0.04']
+    });
+
+    waSocket.ev.on('creds.update', saveCreds);
+
+    if (pairNumber && !waSocket.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                let code = await waSocket.requestPairingCode(pairNumber);
+                code = code?.match(/.{1,4}/g)?.join('-') || code;
+                if (botInstance && tgChatId) {
+                    botInstance.sendMessage(tgChatId, `📲 *CÓDIGO DE VINCULACIÓN WHATSAPP:*\n\n\`${code}\`\n\nVe a WhatsApp > Dispositivos Vinculados > Vincular con número de teléfono, e ingresa este código.`, { parse_mode: 'Markdown' });
+                }
+            } catch (error) {
+                if (botInstance && tgChatId) {
+                    botInstance.sendMessage(tgChatId, '❌ Error al generar el código de WhatsApp. Verifica el número e intenta de nuevo.');
+                }
+            }
+        }, 3000);
+    }
+
+    waSocket.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === 'close') {
+            isWaConnected = false;
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) initWA();
+        } else if (connection === 'open') {
+            isWaConnected = true;
+            console.log('✅ WhatsApp Bot Conectado Exitosamente');
+            if (botInstance && tgChatId) botInstance.sendMessage(tgChatId, '✅ *WhatsApp vinculado y conectado correctamente al servidor.*', { parse_mode: 'Markdown' });
+        }
+    });
+}
+initWA(); // Iniciar sesión WA al arrancar el script
+
+// Helpers WhatsApp
+async function enviarWA(numero, mensaje) {
+    if (!isWaConnected || !waSocket) return;
+    try {
+        const jid = `${numero}@s.whatsapp.net`;
+        await waSocket.sendMessage(jid, { text: mensaje });
+    } catch (e) { console.log('Error enviando WA:', e.message); }
+}
+
+async function broadcastWA(mensaje, db) {
+    if (!isWaConnected || !waSocket) return;
+    const usersSnap = await get(ref(db, 'users'));
+    if (!usersSnap.exists()) return;
+    
+    let usersWA = [];
+    usersSnap.forEach(u => {
+        if (u.val().whatsapp) usersWA.push(u.val().whatsapp);
+    });
+
+    for (const num of usersWA) {
+        await enviarWA(num, mensaje);
+        await delay(2500); // Retraso obligatorio para evitar baneos por spam
+    }
+}
+// --------------------------------------
+
 // CONFIGURACIÓN MASTER
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
-const TASA_COP = 3800; // Tasa fija establecida
+const TASA_COP = 3800; 
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
@@ -20,9 +96,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// --- ADAPTADOR DE PRODUCTOS ANTIGUOS ---
-// Esta función lee tus productos creados en versiones anteriores y los adapta 
-// para que funcionen con el nuevo sistema de categorías y variantes.
 function adaptarProductoLegacy(p) {
     if (p && !p.durations && p.price !== undefined) {
         p.durations = {
@@ -38,7 +111,6 @@ function adaptarProductoLegacy(p) {
     return p;
 }
 
-// --- SISTEMA DE RANGOS VIP DINÁMICO ---
 async function getRanks(db) {
     const snap = await get(ref(db, 'settings/ranks'));
     if (snap.exists()) {
@@ -126,7 +198,6 @@ async function verificarBonoReferido(db, bot, targetUid, amountAdded) {
     }
 }
 
-// --- ESTADOS Y TECLADOS EN PANTALLA ---
 const userStates = {}; 
 
 const userKeyboard = {
@@ -135,7 +206,8 @@ const userKeyboard = {
             [{ text: '🛒 Tienda' }, { text: '👤 Mi Perfil' }],
             [{ text: '💳 Recargas' }, { text: '🤝 Referidos' }],
             [{ text: '🎟️ Canjear Cupón' }, { text: '💸 Transferir Saldo' }],
-            [{ text: '🔄 Resetear Key' }, { text: '🔄 Solicitar Reembolso' }] 
+            [{ text: '🔄 Resetear Key' }, { text: '🔄 Solicitar Reembolso' }],
+            [{ text: '📱 Vincular Mi WhatsApp' }] // NUEVO BOTÓN USUARIO
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -203,6 +275,7 @@ function buildAdminKeyboard(adminData) {
         bottomRow.push({ text: '🔍 Ver Keys/Eliminar' }); 
         bottomRow.push({ text: '👮 Gest. Admins' }); 
         bottomRow.push({ text: '🌍 Gest. Países' }); 
+        bottomRow.push({ text: '📱 Vincular WA Bot' }); // NUEVO BOTÓN ADMIN
     }
     bottomRow.push({ text: '❌ Cancelar Acción' }); 
     kb.push(bottomRow);
@@ -254,6 +327,7 @@ async function sendUserManageMenu(chatId, targetUid, bot) {
                     `*Saldo:* $${parseFloat(targetUser.balance||0).toFixed(2)} USD\n` +
                     `*Gastado Total:* $${totalSpent.toFixed(2)} USD\n` +
                     `*Rango:* ${rangoActual.nombre}\n` +
+                    `*WA Vinculado:* ${targetUser.whatsapp ? '✅ ' + targetUser.whatsapp : '❌ No'}\n` +
                     `*Estado:* ${banText}`;
                     
     const inlineKeyboard = [
@@ -336,6 +410,11 @@ bot.on('message', async (msg) => {
         
         if (isBanned) return bot.sendMessage(chatId, '🚫 *ESTÁS BANEADO*\nContacta a soporte para más información.', { parse_mode: 'Markdown' });
         if (isMaintenance) return bot.sendMessage(chatId, '🛠️ *MODO MANTENIMIENTO ACTIVO*\nEstamos aplicando mejoras. Volveremos pronto.', { parse_mode: 'Markdown' });
+        
+        // Verificación de WhatsApp obligatorio para transacciones/tienda (opcional según requerimiento)
+        if (!webUser.whatsapp && !['📱 Vincular Mi WhatsApp', '❌ Cancelar Acción', '👤 Mi Perfil'].includes(text) && !userStates[chatId]) {
+            return bot.sendMessage(chatId, '⚠️ *VERIFICACIÓN REQUERIDA*\n\nPara usar el bot, debes vincular tu número de WhatsApp para recibir las notificaciones de saldo y compras.\n\nPor favor presiona el botón **📱 Vincular Mi WhatsApp**.', { parse_mode: 'Markdown' });
+        }
     }
 
     if (text === '❌ Cancelar Acción') {
@@ -377,6 +456,21 @@ bot.on('message', async (msg) => {
 
     if (!text) return; 
 
+    // --- ACCIONES DE VINCULACIÓN DE WHATSAPP ---
+    if (text === '📱 Vincular Mi WhatsApp') {
+        userStates[chatId] = { step: 'WA_USER_NUMBER', data: {} };
+        return bot.sendMessage(chatId, '📱 *VINCULACIÓN WHATSAPP*\n\nPor favor envía tu número de WhatsApp **incluyendo el código de país**.\nEjemplo: `573001234567`', { parse_mode: 'Markdown', ...cancelKeyboard });
+    }
+
+    if (text === '📱 Vincular WA Bot' && adminData && adminData.isSuper) {
+        const paisesKb = [
+            [{ text: '🇨🇴 Colombia (+57)', callback_data: 'wa_c|57' }, { text: '🇲🇽 México (+52)', callback_data: 'wa_c|52' }],
+            [{ text: '🇦🇷 Argentina (+54)', callback_data: 'wa_c|54' }, { text: '🇨🇱 Chile (+56)', callback_data: 'wa_c|56' }],
+            [{ text: '🇪🇸 España (+34)', callback_data: 'wa_c|34' }, { text: '🌎 Otro', callback_data: 'wa_c|otro' }]
+        ];
+        return bot.sendMessage(chatId, '⚙️ *VINCULAR NÚMERO MASTER WA*\n\nSelecciona el país del número que será el Bot:', { parse_mode: 'Markdown', reply_markup: { inline_keyboard: paisesKb } });
+    }
+
     // --- ACCIONES GENERALES DEL BOTÓN USUARIO ---
     if (text === '🔄 Solicitar Reembolso') {
         userStates[chatId] = { step: 'WAITING_FOR_USER_REFUND_KEY', data: {} };
@@ -417,6 +511,7 @@ bot.on('message', async (msg) => {
                         `🇨🇴 _(Aprox. $${saldoCOP} COP)_\n\n` +
                         `🏆 *Rango Actual:* ${rangoActual.nombre}\n` +
                         `📈 *Total Gastado:* $${totalGastado.toFixed(2)} USD\n` +
+                        `📱 *WhatsApp:* ${webUser.whatsapp ? '✅ Vinculado' : '❌ Pendiente'}\n` +
                         `💸 *Descuento VIP:* -$${parseFloat(rangoActual.descuento || 0).toFixed(2)} USD en tienda.`;
                         
         if (webUser.active_discount > 0) {
@@ -469,6 +564,45 @@ bot.on('message', async (msg) => {
     // --- MANEJO DE ESTADOS DE TEXTO CONTINUOS ---
     if (userStates[chatId]) {
         const state = userStates[chatId];
+
+        // ESTADOS DE WHATSAPP
+        if (state.step === 'WA_ADMIN_NUMBER' && adminData.isSuper) {
+            const numero = text.trim().replace(/\D/g, '');
+            const fullNumber = state.data.country + numero;
+            bot.sendMessage(chatId, `⏳ *Generando código de vinculación para:* \`+${fullNumber}\`\nPor favor espera...`, { parse_mode: 'Markdown' });
+            initWA(fullNumber, chatId, bot);
+            userStates[chatId] = null;
+            return;
+        }
+
+        if (state.step === 'WA_USER_NUMBER') {
+            const numero = text.trim().replace(/\D/g, '');
+            if (numero.length < 10) return bot.sendMessage(chatId, '❌ Número inválido. Asegúrate de incluir el código de país.');
+            
+            const codigoVerif = Math.floor(100000 + Math.random() * 900000).toString();
+            waVerificationCodes[chatId] = { numero: numero, codigo: codigoVerif };
+            
+            bot.sendMessage(chatId, `⏳ Enviando código de verificación a +${numero} vía WhatsApp...`);
+            await enviarWA(numero, `🤖 *SOCIOSXIT BOT*\n\nTu código de verificación es: *${codigoVerif}*\n\nIngresa este código en Telegram para vincular tu cuenta.`);
+            
+            userStates[chatId] = { step: 'WA_USER_VERIFY', data: {} };
+            return bot.sendMessage(chatId, '✅ *Código enviado.*\nRevisa tu WhatsApp e ingresa el código de 6 dígitos aquí:', { parse_mode: 'Markdown', ...cancelKeyboard });
+        }
+
+        if (state.step === 'WA_USER_VERIFY') {
+            const inputCode = text.trim();
+            const sessionData = waVerificationCodes[chatId];
+            
+            if (sessionData && sessionData.codigo === inputCode) {
+                await update(ref(db), { [`users/${webUid}/whatsapp`]: sessionData.numero });
+                bot.sendMessage(chatId, '🎉 *¡WhatsApp vinculado exitosamente!*\nAhora recibirás notificaciones de tus saldos.', { parse_mode: 'Markdown', ...keyboard });
+                delete waVerificationCodes[chatId];
+                userStates[chatId] = null;
+            } else {
+                bot.sendMessage(chatId, '❌ Código incorrecto. Intenta nuevamente o cancela la acción.');
+            }
+            return;
+        }
 
         if (state.step === 'HISTORY_USER' && (adminData.isSuper || adminData.perms.stats)) {
             const targetUsername = text.trim();
@@ -580,11 +714,13 @@ bot.on('message', async (msg) => {
             const usersSnap = await get(ref(db, 'users'));
             let targetUid = null; 
             let targetBal = 0;
+            let targetWA = null;
             
             usersSnap.forEach(u => { 
                 if (u.val().username === state.data.targetUser) { 
                     targetUid = u.key; 
                     targetBal = parseFloat(u.val().balance || 0); 
+                    targetWA = u.val().whatsapp;
                 }
             });
             
@@ -603,6 +739,9 @@ bot.on('message', async (msg) => {
                     bot.sendMessage(child.key, `💸 *RECIBISTE $${amount} USD* de parte de ${webUser.username}.`, { parse_mode: 'Markdown' }); 
                 }
             });
+
+            // Notificación WA
+            if(targetWA) enviarWA(targetWA, `💸 *NUEVO SALDO RECIBIDO*\n\nEl usuario ${webUser.username} te ha transferido *$${amount} USD* a tu cuenta SociosXit.`);
             
             userStates[chatId] = null; 
             return;
@@ -692,6 +831,9 @@ bot.on('message', async (msg) => {
                     bot.sendMessage(chatId, `✅ Producto *${state.data.name}* creado con éxito.`, { parse_mode: 'Markdown', ...keyboard });
                 }
                 
+                // Disparador a WhatsApp global
+                broadcastWA(`🛒 *NUEVO PRODUCTO AÑADIDO*\n\nAcabamos de agregar: *${state.data.name}* a la tienda. ¡Ve a revisarlo!`, db);
+                
                 notifySuperAdmin(webUser.username, tgId, 'Creó Producto/Variante', `Garantía: ${warranty}h`);
                 userStates[chatId] = null; 
                 return;
@@ -706,7 +848,6 @@ bot.on('message', async (msg) => {
                 }
                 
                 const updates = {};
-                // Verifica si es un producto viejo (legacy_var) para colocar las keys en el lugar correcto
                 cleanKeys.forEach(k => {
                     const newId = push(ref(db)).key;
                     if (state.data.durId === 'legacy_var') {
@@ -718,6 +859,10 @@ bot.on('message', async (msg) => {
                 
                 await update(ref(db), updates);
                 bot.sendMessage(chatId, `✅ Se agregaron ${cleanKeys.length} keys a esta variante.`, keyboard);
+                
+                // Disparador WhatsApp global
+                broadcastWA(`📦 *STOCK ACTUALIZADO*\n\nSe han añadido ${cleanKeys.length} unidades al inventario. ¡Visita la tienda antes de que se agoten!`, db);
+
                 notifySuperAdmin(webUser.username, tgId, 'Añadió Stock', `${cleanKeys.length} keys al prod ID: ${state.data.prodId}`);
                 userStates[chatId] = null; 
                 return;
@@ -819,11 +964,13 @@ bot.on('message', async (msg) => {
                 const usersSnap = await get(ref(db, 'users')); 
                 let foundUid = null; 
                 let currentBal = 0; 
+                let targetWA = null;
                 
                 usersSnap.forEach(c => { 
                     if (c.val().username === state.data.targetUser) { 
                         foundUid = c.key; 
                         currentBal = parseFloat(c.val().balance || 0); 
+                        targetWA = c.val().whatsapp;
                     }
                 });
                 
@@ -841,6 +988,9 @@ bot.on('message', async (msg) => {
                             bot.sendMessage(c.key, `🎉 Se depositaron: *$${amount} USD* a tu saldo.\n💰 Disfrútalo.`, { parse_mode: 'Markdown' }); 
                         }
                     });
+
+                    // Notificación WA
+                    if(targetWA) enviarWA(targetWA, `💰 *ACTUALIZACIÓN DE SALDO*\n\nSe han agregado *$${amount} USD* a tu cuenta. \nSaldo actual: *$${(currentBal + amount).toFixed(2)} USD*`);
                     
                     await verificarBonoReferido(db, bot, foundUid, amount);
                 }
@@ -853,8 +1003,13 @@ bot.on('message', async (msg) => {
                 if (isNaN(amt)) return bot.sendMessage(chatId, '❌ Valor inválido.');
                 const uSnap = await get(ref(db, `users/${state.data.targetUid}`)); 
                 const currentBal = parseFloat(uSnap.val().balance || 0);
+                const targetWA = uSnap.val().whatsapp;
+
                 await update(ref(db), { [`users/${state.data.targetUid}/balance`]: currentBal + amt }); 
                 bot.sendMessage(chatId, `✅ Saldo agregado.`, keyboard); 
+                
+                if(targetWA) enviarWA(targetWA, `💰 Un administrador ha agregado *$${amt} USD* a tu saldo.`);
+
                 userStates[chatId] = null; 
                 return;
             }
@@ -864,8 +1019,14 @@ bot.on('message', async (msg) => {
                 if (isNaN(amt)) return bot.sendMessage(chatId, '❌ Valor inválido.');
                 const uSnap = await get(ref(db, `users/${state.data.targetUid}`)); 
                 const currentBal = parseFloat(uSnap.val().balance || 0);
-                await update(ref(db), { [`users/${state.data.targetUid}/balance`]: Math.max(0, currentBal - amt) }); 
+                const targetWA = uSnap.val().whatsapp;
+
+                const nuevoSaldo = Math.max(0, currentBal - amt);
+                await update(ref(db), { [`users/${state.data.targetUid}/balance`]: nuevoSaldo }); 
                 bot.sendMessage(chatId, `✅ Saldo removido.`, keyboard); 
+                
+                if(targetWA) enviarWA(targetWA, `📉 Un administrador ha descontado *$${amt} USD* de tu saldo.\nSaldo actual: *$${nuevoSaldo.toFixed(2)} USD*`);
+
                 userStates[chatId] = null; 
                 return;
             }
@@ -1208,6 +1369,18 @@ bot.on('callback_query', async (query) => {
     
     const adminData = await getAdminData(tgId);
 
+    // --- CALLBACKS VINCULACIÓN WHATSAPP ---
+    if (data.startsWith('wa_c|')) {
+        const paisCode = data.split('|')[1];
+        if (paisCode === 'otro') {
+            userStates[chatId] = { step: 'WA_ADMIN_NUMBER', data: { country: '' } };
+            return bot.editMessageText('Escribe el código de tu país seguido del número telefónico. (Ej: 51999888777)', { chat_id: chatId, message_id: query.message.message_id });
+        } else {
+            userStates[chatId] = { step: 'WA_ADMIN_NUMBER', data: { country: paisCode } };
+            return bot.editMessageText(`✅ País seleccionado (+${paisCode}).\n\nPor favor envía el **número telefónico** de WhatsApp (sin el código de país):`, { chat_id: chatId, message_id: query.message.message_id });
+        }
+    }
+
     // --- CALLBACKS DEL SUPER ADMIN (CONTROL SUPREMO) ---
     if (adminData && adminData.isSuper) {
         if (data.startsWith('viewdel|')) {
@@ -1241,6 +1414,7 @@ bot.on('callback_query', async (query) => {
         
         if (data.startsWith('delprod_confirm|')) { 
             await remove(ref(db, `products/${data.split('|')[1]}`)); 
+            broadcastWA(`🗑️ *ACTUALIZACIÓN DE TIENDA*\n\nUn producto ha sido retirado definitivamente de la tienda.`, db);
             return bot.editMessageText('✅ Producto y todas sus keys han sido purgados.', { chat_id: chatId, message_id: query.message.message_id }); 
         }
         
@@ -1287,17 +1461,18 @@ bot.on('callback_query', async (query) => {
             const prodId = data.split('|')[1];
             const durId = data.split('|')[2];
             
-            // Lógica legacy: Si la variante es legacy, eliminar todo el producto porque es la única.
             if (durId === 'legacy_var') {
                 await remove(ref(db, `products/${prodId}`));
             } else {
                 await remove(ref(db, `products/${prodId}/durations/${durId}`)); 
             }
+            broadcastWA(`🗑️ *ACTUALIZACIÓN DE TIENDA*\n\nUna variante de producto ha sido retirada de la tienda.`, db);
             return bot.editMessageText('✅ Variante eliminada.', { chat_id: chatId, message_id: query.message.message_id }); 
         }
         
         if (data.startsWith('del_fullprod|') && (adminData.isSuper || adminData.perms.products)) { 
             await remove(ref(db, `products/${data.split('|')[1]}`)); 
+            broadcastWA(`🗑️ *ACTUALIZACIÓN DE TIENDA*\n\nUn producto ha sido retirado de la tienda.`, db);
             return bot.editMessageText('✅ Producto completo eliminado de la tienda.', { chat_id: chatId, message_id: query.message.message_id }); 
         }
 
@@ -1556,6 +1731,8 @@ bot.on('callback_query', async (query) => {
                         bot.sendMessage(ch.key, `🔄 *REEMBOLSO APROBADO*\n\nSe devolvió el dinero a tu cuenta.\n💰 +$${price} USD\n💳 Saldo Actual: $${nSal.toFixed(2)}`, { parse_mode: 'Markdown' }); 
                     }
                 });
+
+                if(uData.whatsapp) enviarWA(uData.whatsapp, `🔄 *REEMBOLSO APROBADO*\nSe han devuelto *$${price} USD* a tu cuenta.`);
             }
             return;
         }
@@ -1668,7 +1845,6 @@ bot.on('callback_query', async (query) => {
             const keyToDeliver = durInfo.keys[firstKeyId]; 
             const keysRestantes = Object.keys(durInfo.keys).length - 1; 
 
-            // Determinar ruta de actualización si es legacy o normal
             let keyPath = `products/${productId}/durations/${durId}/keys/${firstKeyId}`;
             if (durId === 'legacy_var') {
                 keyPath = `products/${productId}/keys/${firstKeyId}`;
@@ -1722,4 +1898,4 @@ bot.on('callback_query', async (query) => {
 });
 
 module.exports = { verificarBonoReferido };
-console.log('🤖 Terminal de SociosXit (Edición V5 Definitiva + Legacy Fix) En línea y a la espera de peticiones...');
+console.log('🤖 Terminal de SociosXit (Edición V5 Definitiva + WhatsApp Integration) En línea y a la espera de peticiones...');
