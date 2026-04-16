@@ -5,7 +5,7 @@ const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion,
 const pino = require('pino');
 const sistemaRecargas = require('./recargas');
 
-// CONFIGURACIÓN MASTER
+// CONFIGURACIÓN MAS
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
