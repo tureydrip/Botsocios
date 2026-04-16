@@ -22,8 +22,11 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
+// Estados de interacción para los usuarios en WhatsApp
+const waUserStates = {};
+
 // ==========================================
-// MÓDULO DE WHATSAPP BOT (BAILEYS)
+// MÓDULO DE WHATSAPP BOT (BAILEYS OPTIMIZADO)
 // ==========================================
 let waSock = null;
 
@@ -48,16 +51,159 @@ async function iniciarWhatsApp() {
             console.log('WhatsApp: Conexión cerrada, reconectando...', shouldReconnect);
             if (shouldReconnect) iniciarWhatsApp();
         } else if (connection === 'open') {
-            console.log('WhatsApp: Conectado exitosamente');
+            console.log('WhatsApp: Conectado exitosamente y blindado contra baneos.');
+        }
+    });
+
+    // SISTEMA .SHOP Y RESPUESTAS DESDE WHATSAPP
+    waSock.ev.on('messages.upsert', async m => {
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const sender = msg.key.remoteJid;
+        const numero = sender.split('@')[0];
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        const t = text.trim().toLowerCase();
+
+        // Buscar al usuario vinculado por su número de WA
+        const uSnap = await get(ref(db, 'users'));
+        let webUid = null, webUser = null;
+        if (uSnap.exists()) {
+            uSnap.forEach(u => {
+                if (u.val().waNumber === numero && u.val().waLinked) {
+                    webUid = u.key; webUser = u.val();
+                }
+            });
+        }
+
+        if (!webUser) return; // Ignora a números no registrados en el bot
+
+        if (t === '.shop' || t === 'tienda') {
+            const pSnap = await get(ref(db, 'products'));
+            let kbText = `🛒 *TIENDA SociosXit*\n\nResponde con el *NÚMERO* del producto que deseas visualizar o comprar:\n\n`;
+            let pList = [];
+            let i = 1;
+            
+            pSnap.forEach(c => {
+                const p = adaptarProductoLegacy(c.val());
+                kbText += `*${i}.* ⚡️ ${p.name}\n`;
+                pList.push({ id: c.key, name: p.name, durations: p.durations });
+                i++;
+            });
+
+            if(pList.length === 0) return enviarMensajeWA(numero, `❌ Lo sentimos, la tienda se encuentra vacía en este momento.`);
+
+            waUserStates[numero] = { step: 'SHOP_SELECT_PROD', pList };
+            kbText += `\n_Ejemplo: Escribe 1 para seleccionar la primera opción._`;
+            return enviarMensajeWA(numero, kbText);
+        }
+
+        if (waUserStates[numero]) {
+            const state = waUserStates[numero];
+            
+            if (state.step === 'SHOP_SELECT_PROD') {
+                const idx = parseInt(t) - 1;
+                if (isNaN(idx) || idx < 0 || idx >= state.pList.length) {
+                    return enviarMensajeWA(numero, `❌ Opción inválida. Responde con un número del 1 al ${state.pList.length}.`);
+                }
+                
+                const prod = state.pList[idx];
+                let dText = `📦 *${prod.name}*\n\nSelecciona la duración deseada respondiendo con su *NÚMERO*:\n\n`;
+                let dList = [];
+                let dIdx = 1;
+                
+                Object.keys(prod.durations).forEach(dId => {
+                    const dur = prod.durations[dId];
+                    const stock = dur.keys ? Object.keys(dur.keys).length : 0;
+                    if (stock > 0) {
+                        dText += `*${dIdx}.* ⏱️ ${dur.duration} - *$${dur.price} USD* _(${stock} disp)_\n`;
+                        dList.push({ dId, ...dur });
+                        dIdx++;
+                    }
+                });
+                
+                if (dList.length === 0) {
+                    waUserStates[numero] = null;
+                    return enviarMensajeWA(numero, `❌ Lo siento, todas las variantes de este producto están agotadas.`);
+                }
+                
+                waUserStates[numero] = { step: 'SHOP_SELECT_DUR', prodId: prod.id, dList, prodName: prod.name };
+                return enviarMensajeWA(numero, dText);
+            }
+
+            if (state.step === 'SHOP_SELECT_DUR') {
+                const idx = parseInt(t) - 1;
+                if (isNaN(idx) || idx < 0 || idx >= state.dList.length) {
+                    return enviarMensajeWA(numero, `❌ Opción inválida.`);
+                }
+                const dur = state.dList[idx];
+
+                waUserStates[numero] = { step: 'SHOP_CONFIRM', prodId: state.prodId, durId: dur.dId, durInfo: dur, prodName: state.prodName };
+                return enviarMensajeWA(numero, `⚠️ *CONFIRMACIÓN DE COMPRA*\n\n🛍️ *Producto:* ${state.prodName} (${dur.duration})\n💵 *Precio:* $${dur.price} USD\n💰 *Tu saldo actual:* $${parseFloat(webUser.balance || 0).toFixed(2)} USD\n\n👉 Escribe *COMPRAR* para proceder con la transacción.\n👉 Escribe *CANCELAR* para abortar.`);
+            }
+
+            if (state.step === 'SHOP_CONFIRM') {
+                if (t === 'cancelar') {
+                    waUserStates[numero] = null;
+                    return enviarMensajeWA(numero, `❌ Compra cancelada exitosamente.`);
+                }
+                if (t === 'comprar') {
+                    const { prodId, durId, durInfo, prodName } = state;
+                    const fPrice = durInfo.price;
+                    let cB = parseFloat(webUser.balance||0);
+                    
+                    if (cB < fPrice) {
+                         waUserStates[numero] = null;
+                         return enviarMensajeWA(numero, `❌ *Saldo insuficiente.*\n\nCuentas con $${cB.toFixed(2)} USD, pero el producto cuesta $${fPrice.toFixed(2)} USD.\nVe al bot de Telegram y usa el menú *💳 Recargas*.`);
+                    }
+
+                    const pSnapLive = await get(ref(db, `products/${prodId}`));
+                    if(!pSnapLive.exists()) return enviarMensajeWA(numero, `❌ Error en el sistema, el producto ya no existe.`);
+                    
+                    const prLive = pSnapLive.val();
+                    let realDur = null;
+                    if(durId === 'legacy_var' && prLive.keys) realDur = { keys: prLive.keys };
+                    else if(prLive.durations && prLive.durations[durId]) realDur = prLive.durations[durId];
+
+                    if (realDur && realDur.keys && Object.keys(realDur.keys).length > 0) {
+                        const kId = Object.keys(realDur.keys)[0];
+                        const kD = realDur.keys[kId];
+
+                        let kP = `products/${prodId}/durations/${durId}/keys/${kId}`;
+                        if (durId === 'legacy_var') kP = `products/${prodId}/keys/${kId}`;
+
+                        const u = { [kP]: null, [`users/${webUid}/balance`]: cB - fPrice };
+                        u[`users/${webUid}/history/${push(ref(db)).key}`] = { product: `${prodName} - ${durInfo.duration}`, key: kD, price: fPrice, date: Date.now(), refunded: false, warrantyHours: durInfo.warranty || 0 };
+
+                        await update(ref(db), u);
+                        enviarMensajeWA(numero, `✅ *¡COMPRA EXITOSA!*\n\n📦 *Producto:* ${prodName}\n⏱️ *Duración:* ${durInfo.duration}\n\n🔑 *Tu Key es:*\n${kD}\n\n¡Gracias por tu compra en SociosXit! Disfruta tu producto. 🌟`);
+                        waUserStates[numero] = null;
+                    } else {
+                        waUserStates[numero] = null;
+                        enviarMensajeWA(numero, `❌ Lo siento, el producto se agotó justo en este momento. Intenta con otro o espera un restock.`);
+                    }
+                    return;
+                }
+            }
         }
     });
 }
 iniciarWhatsApp();
 
+// Función de Envío Humanizada y Profesional
 async function enviarMensajeWA(numero, mensaje) {
     if (waSock && waSock.authState.creds.registered) {
         try {
-            await waSock.sendMessage(`${numero}@s.whatsapp.net`, { text: mensaje });
+            const jid = `${numero}@s.whatsapp.net`;
+            // Simular presencia "Escribiendo..." para evitar baneos de WhatsApp
+            await waSock.sendPresenceUpdate('composing', jid);
+            
+            // Tiempo dinámico: entre 1.5 y 4 segundos dependiendo de la longitud del texto
+            const delayMs = Math.min(Math.max(mensaje.length * 20, 1500), 4000);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+            
+            await waSock.sendPresenceUpdate('paused', jid);
+            await waSock.sendMessage(jid, { text: mensaje });
         } catch (error) {
             console.error('Error enviando mensaje WA a', numero, error.message);
         }
@@ -78,8 +224,6 @@ async function broadcastWA(mensaje) {
 }
 
 // --- ADAPTADOR DE PRODUCTOS ANTIGUOS ---
-// Esta función lee tus productos creados en versiones anteriores y los adapta 
-// para que funcionen con el nuevo sistema de categorías y variantes.
 function adaptarProductoLegacy(p) {
     if (p && !p.durations && p.price !== undefined) {
         p.durations = {
@@ -260,7 +404,7 @@ function buildAdminKeyboard(adminData) {
         bottomRow.push({ text: '🔍 Ver Keys/Eliminar' }); 
         bottomRow.push({ text: '👮 Gest. Admins' }); 
         bottomRow.push({ text: '🌍 Gest. Países' }); 
-        bottomRow.push({ text: '📱 Vincular Bot WA' }); // BOTÓN AÑADIDO PARA VINCULAR WA
+        bottomRow.push({ text: '📱 Vincular Bot WA' });
     }
     bottomRow.push({ text: '❌ Cancelar Acción' }); 
     kb.push(bottomRow);
@@ -363,7 +507,7 @@ bot.onText(/\/start(?: (.*))?/, async (msg, match) => {
             ]
         };
         userStates[chatId] = { step: 'USER_WA_COUNTRY', data: {} };
-        return bot.sendMessage(chatId, '⚠️ *VERIFICACIÓN OBLIGATORIA*\n\nPara poder usar el bot y recibir notificaciones de saldo y productos, debes vincular tu número de WhatsApp activo.\n\n👇 Selecciona tu país de residencia:', {reply_markup: kb, parse_mode: 'Markdown'});
+        return bot.sendMessage(chatId, '⚠️ *VERIFICACIÓN OBLIGATORIA*\n\nPara poder usar el bot, disfrutar de la tienda y recibir notificaciones de tu saldo, debes vincular tu número de WhatsApp activo.\n\n👇 Selecciona tu país de residencia:', {reply_markup: kb, parse_mode: 'Markdown'});
     }
 
     const keyboard = adminData ? buildAdminKeyboard(adminData) : userKeyboard;
@@ -440,8 +584,8 @@ bot.on('message', async (msg) => {
 
             if (waSock && waSock.authState.creds.registered) {
                 try {
-                    await enviarMensajeWA(fullNumber, `🤖 *Verificación SociosXit*\n\nTu código de verificación es: *${verificationCode}*\n\nRegresa al Bot de Telegram e ingrésalo.`);
-                    return bot.sendMessage(chatId, `✅ Hemos enviado un código por WhatsApp al número (+${fullNumber}).\n\n**Ingresa el código aquí para verificar tu cuenta:**`, {parse_mode: 'Markdown'});
+                    await enviarMensajeWA(fullNumber, `🤖 *Verificación SociosXit*\n\nTu código de seguridad es:\n*${verificationCode}*\n\nRegresa a Telegram e ingrésalo para activar tu cuenta.`);
+                    return bot.sendMessage(chatId, `✅ Hemos enviado un código a tu WhatsApp (+${fullNumber}).\n\n**Ingresa el código aquí para verificar tu cuenta:**`, {parse_mode: 'Markdown'});
                 } catch (err) {
                     return bot.sendMessage(chatId, `❌ Hubo un error enviando el WhatsApp. Comprueba que el número sea correcto y vuelve a intentar usando /start.`);
                 }
@@ -454,6 +598,7 @@ bot.on('message', async (msg) => {
             if (text.trim() === state.data.expectedCode) {
                 await update(ref(db), { [`users/${webUid}/waLinked`]: true, [`users/${webUid}/waNumber`]: state.data.pendingWaNumber });
                 userStates[chatId] = null;
+                enviarMensajeWA(state.data.pendingWaNumber, `🎉 *¡Cuenta Vinculada con Éxito!*\n\nBienvenido a SociosXit. Si quieres comprar desde aquí, simplemente escribe *.shop* en cualquier momento.`);
                 return bot.sendMessage(chatId, `🎉 *¡WhatsApp vinculado exitosamente!*\n\nYa tienes acceso completo. Escribe /start para ver el menú.`, {parse_mode: 'Markdown'});
             } else {
                 return bot.sendMessage(chatId, `❌ Código incorrecto. Verifica en tu WhatsApp e intenta de nuevo:`);
@@ -479,7 +624,7 @@ bot.on('message', async (msg) => {
             if (isNaN(num)) return bot.sendMessage(chatId, '❌ Escribe solo números.');
             const fullNumber = `${state.data.countryCode}${num}`;
             
-            bot.sendMessage(chatId, `⏳ Solicitando Pairing Code a WhatsApp para el número +${fullNumber}... Por favor espera.`);
+            bot.sendMessage(chatId, `⏳ Solicitando Código a WhatsApp para el número +${fullNumber}... Por favor espera.`);
             
             try {
                 if (waSock && waSock.authState.creds.registered) {
@@ -489,7 +634,7 @@ bot.on('message', async (msg) => {
                 setTimeout(async () => {
                     try {
                         const code = await waSock.requestPairingCode(fullNumber);
-                        bot.sendMessage(chatId, `Tu código de vinculación para WhatsApp es:\n\n*${code}*\n\nIngresa este código en "Dispositivos Vinculados" > "Vincular con el número de teléfono" en tu WhatsApp destino.`, { parse_mode: 'Markdown', ...keyboard });
+                        bot.sendMessage(chatId, `📲 *Tu código de vinculación para WhatsApp es:*\n\n\`${code}\`\n\n_(Toca el código para copiarlo)_\n\nIngresa este código en "Dispositivos Vinculados" > "Vincular con el número de teléfono" en tu WhatsApp destino.`, { parse_mode: 'Markdown', ...keyboard });
                     } catch(err) {
                         bot.sendMessage(chatId, '❌ Error al solicitar código: ' + err.message, keyboard);
                     }
@@ -766,7 +911,7 @@ bot.on('message', async (msg) => {
             });
 
             // NOTIFICACIÓN WA TRANSFERENCIA
-            if (targetWa) enviarMensajeWA(targetWa, `💸 *¡TRANSFERENCIA RECIBIDA!*\n\nHas recibido *$${amount} USD* de parte del usuario ${webUser.username}.`);
+            if (targetWa) enviarMensajeWA(targetWa, `💸 *¡TRANSFERENCIA RECIBIDA!*\n\nHas recibido *$${amount} USD* de parte de tu compañero *${webUser.username}*. ¡Disfrútalo! 🥳`);
             
             userStates[chatId] = null; 
             return;
@@ -856,7 +1001,7 @@ bot.on('message', async (msg) => {
                     bot.sendMessage(chatId, `✅ Producto *${state.data.name}* creado con éxito.`, { parse_mode: 'Markdown', ...keyboard });
 
                     // NOTIFICACIÓN WHATSAPP CREAR PRODUCTO
-                    broadcastWA(`📦 *¡NUEVO PRODUCTO EN LA TIENDA!*\n\nEl producto *${state.data.name}* ya se encuentra disponible para su compra.`);
+                    broadcastWA(`📦 *¡NUEVO PRODUCTO EN TIENDA!*\n\nEl artículo *${state.data.name}* ya se encuentra disponible. 🛒 Ve a revisarlo.`);
                 }
                 
                 notifySuperAdmin(webUser.username, tgId, 'Creó Producto/Variante', `Garantía: ${warranty}h`);
@@ -890,7 +1035,7 @@ bot.on('message', async (msg) => {
                 // NOTIFICACIÓN WHATSAPP AÑADIR STOCK
                 const pSnap = await get(ref(db, `products/${state.data.prodId}`));
                 const pName = pSnap.exists() ? pSnap.val().name : 'un producto';
-                broadcastWA(`🔑 *¡HAY NUEVO STOCK!*\n\nSe han agregado nuevas keys a *${pName}*. ¡Corre a nuestra tienda antes de que se agoten!`);
+                broadcastWA(`🔥 *¡RESTOCK EXCLUSIVO!*\n\nAcabamos de agregar nuevas keys para *${pName}*. ¡Corre a comprar antes de que se vuelvan a agotar! 🏃‍♂️💨`);
 
                 userStates[chatId] = null; 
                 return;
@@ -1018,7 +1163,7 @@ bot.on('message', async (msg) => {
                     });
 
                     // NOTIFICACIÓN WHATSAPP AÑADIR SALDO
-                    if (targetWa) enviarMensajeWA(targetWa, `💰 *¡RECARGA APLICADA!*\n\nSe han sumado *$${amount} USD* a tu saldo en la tienda.`);
+                    if (targetWa) enviarMensajeWA(targetWa, `🌟 *¡REGALO DE ADMINISTRADOR!*\n\nEl staff acaba de agregar *$${amount} USD* directamente a tu cuenta. ¡Disfruta tus compras en SociosXit! 🎁`);
                     
                     await verificarBonoReferido(db, bot, foundUid, amount);
                 }
@@ -1035,7 +1180,7 @@ bot.on('message', async (msg) => {
                 await update(ref(db), { [`users/${state.data.targetUid}/balance`]: currentBal + amt }); 
                 bot.sendMessage(chatId, `✅ Saldo agregado.`, keyboard); 
 
-                if (userAct.waLinked && userAct.waNumber) enviarMensajeWA(userAct.waNumber, `💰 *SALDO AÑADIDO!*\n\nEl administrador ha sumado *$${amt} USD* a tu cuenta.`);
+                if (userAct.waLinked && userAct.waNumber) enviarMensajeWA(userAct.waNumber, `🌟 *¡BONIFICACIÓN DE ADMIN!*\n\nSe te han agregado *$${amt} USD* a tu saldo de la tienda. 💸`);
                 userStates[chatId] = null; 
                 return;
             }
@@ -1049,7 +1194,7 @@ bot.on('message', async (msg) => {
                 await update(ref(db), { [`users/${state.data.targetUid}/balance`]: Math.max(0, currentBal - amt) }); 
                 bot.sendMessage(chatId, `✅ Saldo removido.`, keyboard); 
 
-                if (userAct.waLinked && userAct.waNumber) enviarMensajeWA(userAct.waNumber, `➖ *SALDO RETIRADO*\n\nEl administrador ha descontado *$${amt} USD* de tu cuenta.`);
+                if (userAct.waLinked && userAct.waNumber) enviarMensajeWA(userAct.waNumber, `➖ *NOTIFICACIÓN DE SALDO*\n\nEl administrador ha retirado *$${amt} USD* de tu cuenta.`);
                 userStates[chatId] = null; 
                 return;
             }
@@ -1064,8 +1209,8 @@ bot.on('message', async (msg) => {
                     count++; 
                 });
 
-                // NOTIFICACIÓN WHATSAPP BROADCAST
-                broadcastWA(`📢 *ANUNCIO SociosXit*\n\n${text}`);
+                // NOTIFICACIÓN WHATSAPP BROADCAST MEJORADA
+                broadcastWA(`📢 *COMUNICADO OFICIAL SociosXit*\n\n${text}\n\n_Equipo SociosXit_ 🛡️`);
                 
                 bot.sendMessage(chatId, `✅ Mensaje enviado a ${count} usuarios en Telegram y notificados en WhatsApp.`, keyboard); 
                 userStates[chatId] = null; 
@@ -1525,7 +1670,7 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText('✅ Producto completo eliminado de la tienda.', { chat_id: chatId, message_id: query.message.message_id }); 
 
             // NOTIFICACIÓN WHATSAPP
-            broadcastWA(`🗑️ *PRODUCTO RETIRADO*\n\nEl producto *${pName}* ha sido modificado o eliminado de nuestra tienda temporalmente.`);
+            broadcastWA(`🗑️ *PRODUCTO RETIRADO*\n\nEl producto *${pName}* ha sido retirado de nuestra tienda por el momento.`);
             return;
         }
 
@@ -1626,6 +1771,10 @@ bot.on('callback_query', async (query) => {
                         bot.sendMessage(c.key, `🎁 *¡TIENES UN REGALO DEL STAFF!*\n\nProducto: *${p.name}*\n🔑 Key: \`${keyToDeliver}\``, { parse_mode: 'Markdown' }); 
                     }
                 });
+
+                if (tUser.waLinked && tUser.waNumber) {
+                    enviarMensajeWA(tUser.waNumber, `🎁 *¡TIENES UN REGALO DEL STAFF!*\n\nTe hemos regalado: *${p.name}* (${durInfo.duration})\n\n🔑 *Tu Key es:*\n${keyToDeliver}\n\n¡Esperamos que lo disfrutes!`);
+                }
             } else {
                 bot.sendMessage(chatId, '❌ Producto se quedó sin stock antes de enviar el regalo.');
             }
@@ -1784,6 +1933,10 @@ bot.on('callback_query', async (query) => {
                         bot.sendMessage(ch.key, `🔄 *REEMBOLSO APROBADO*\n\nSe devolvió el dinero a tu cuenta.\n💰 +$${price} USD\n💳 Saldo Actual: $${nSal.toFixed(2)}`, { parse_mode: 'Markdown' }); 
                     }
                 });
+
+                if (uData.waLinked && uData.waNumber) {
+                    enviarMensajeWA(uData.waNumber, `🔄 *REEMBOLSO APROBADO*\n\nEl staff ha devuelto *$${price} USD* a tu saldo de SociosXit por la key con problemas.`);
+                }
             }
             return;
         }
@@ -1799,12 +1952,30 @@ bot.on('callback_query', async (query) => {
             return bot.sendMessage(chatId, '❌ Proceso de reembolso cancelado por el Admin.'); 
         }
 
-        // RECARGAS ADMIN
+        // --- INTERCEPCIÓN AVISOS RECARGAS ---
         if (data.startsWith('ok_rech|') && (adminData.isSuper || adminData.perms.balance)) {
-            return sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, data.split('|')[1], adminUsername, tgId, notifySuperAdmin);
+            const uid = data.split('|')[1];
+            // Se ejecuta la lógica original de tu recarga
+            const result = await sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, uid, adminUsername, tgId, notifySuperAdmin);
+            
+            // Mandamos notificación a WA
+            const uS = await get(ref(db, `users/${uid}`));
+            if(uS.exists() && uS.val().waLinked) {
+                enviarMensajeWA(uS.val().waNumber, `🌟 *¡TU RECARGA HA SIDO APROBADA!*\n\nTu pago ha sido validado exitosamente y tu saldo ya está disponible en el bot de Telegram. ¡Gracias por elegir SociosXit! 💸🛍️`);
+            }
+            return result;
         }
         if (data.startsWith('no_rech|') && (adminData.isSuper || adminData.perms.balance)) {
-            return sistemaRecargas.rechazarRecarga(bot, db, chatId, query.message.message_id, data.split('|')[1], adminUsername, tgId, notifySuperAdmin);
+            const uid = data.split('|')[1];
+            // Se ejecuta la lógica original de tu recarga
+            const result = await sistemaRecargas.rechazarRecarga(bot, db, chatId, query.message.message_id, uid, adminUsername, tgId, notifySuperAdmin);
+            
+            // Mandamos notificación a WA
+            const uS = await get(ref(db, `users/${uid}`));
+            if(uS.exists() && uS.val().waLinked) {
+                enviarMensajeWA(uS.val().waNumber, `❌ *AVISO DE RECARGA*\n\nLo sentimos, tu solicitud de recarga ha sido rechazada porque el comprobante no es válido.\nSi crees que es un error, por favor contacta a soporte. 🛡️`);
+            }
+            return result;
         }
     }
 
@@ -1954,4 +2125,4 @@ process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
 module.exports = { verificarBonoReferido };
-console.log('🤖 Terminal de SociosXit (Edición V5 Definitiva + Legacy Fix + Integración WA) En línea y a la espera de peticiones...');
+console.log('🤖 Terminal de SociosXit (V6 Anti-Ban + WhatsApp Shop + Telegram Legacy) En línea y a la espera de peticiones...');
