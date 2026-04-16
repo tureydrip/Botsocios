@@ -4,7 +4,7 @@ const { getDatabase, ref, get, update, push, set, remove } = require('firebase/d
 const sistemaRecargas = require('./recargas');
 
 // --- INTEGRACIÓN WHATSAPP (BAILEYS) ---
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 
 let waSocket = null;
@@ -13,11 +13,13 @@ const waVerificationCodes = {}; // Almacena códigos temporales para verificar u
 
 async function initWA(pairNumber = null, tgChatId = null, botInstance = null) {
     const { state, saveCreds } = await useMultiFileAuthState('wa_auth_session');
+    
     waSocket = makeWASocket({
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         auth: state,
-        browser: ['Ubuntu', 'Chrome', '20.0.04']
+        browser: Browsers.macOS('Desktop'), // Simula ser la app nativa de Mac para evitar bloqueos
+        syncFullHistory: false // Evita sobrecargar la memoria y acelera la vinculación
     });
 
     waSocket.ev.on('creds.update', saveCreds);
@@ -32,7 +34,8 @@ async function initWA(pairNumber = null, tgChatId = null, botInstance = null) {
                 }
             } catch (error) {
                 if (botInstance && tgChatId) {
-                    botInstance.sendMessage(tgChatId, '❌ Error al generar el código de WhatsApp. Verifica el número e intenta de nuevo.');
+                    botInstance.sendMessage(tgChatId, '❌ Error al generar el código de WhatsApp. Es posible que el servidor de Meta esté bloqueando la solicitud. Intenta nuevamente más tarde.');
+                    console.error('Error solicitando Pairing Code:', error);
                 }
             }
         }, 3000);
@@ -207,7 +210,7 @@ const userKeyboard = {
             [{ text: '💳 Recargas' }, { text: '🤝 Referidos' }],
             [{ text: '🎟️ Canjear Cupón' }, { text: '💸 Transferir Saldo' }],
             [{ text: '🔄 Resetear Key' }, { text: '🔄 Solicitar Reembolso' }],
-            [{ text: '📱 Vincular Mi WhatsApp' }] // NUEVO BOTÓN USUARIO
+            [{ text: '📱 Vincular Mi WhatsApp' }]
         ],
         resize_keyboard: true,
         is_persistent: true
@@ -275,7 +278,7 @@ function buildAdminKeyboard(adminData) {
         bottomRow.push({ text: '🔍 Ver Keys/Eliminar' }); 
         bottomRow.push({ text: '👮 Gest. Admins' }); 
         bottomRow.push({ text: '🌍 Gest. Países' }); 
-        bottomRow.push({ text: '📱 Vincular WA Bot' }); // NUEVO BOTÓN ADMIN
+        bottomRow.push({ text: '📱 Vincular WA Bot' }); 
     }
     bottomRow.push({ text: '❌ Cancelar Acción' }); 
     kb.push(bottomRow);
@@ -411,7 +414,6 @@ bot.on('message', async (msg) => {
         if (isBanned) return bot.sendMessage(chatId, '🚫 *ESTÁS BANEADO*\nContacta a soporte para más información.', { parse_mode: 'Markdown' });
         if (isMaintenance) return bot.sendMessage(chatId, '🛠️ *MODO MANTENIMIENTO ACTIVO*\nEstamos aplicando mejoras. Volveremos pronto.', { parse_mode: 'Markdown' });
         
-        // Verificación de WhatsApp obligatorio para transacciones/tienda (opcional según requerimiento)
         if (!webUser.whatsapp && !['📱 Vincular Mi WhatsApp', '❌ Cancelar Acción', '👤 Mi Perfil'].includes(text) && !userStates[chatId]) {
             return bot.sendMessage(chatId, '⚠️ *VERIFICACIÓN REQUERIDA*\n\nPara usar el bot, debes vincular tu número de WhatsApp para recibir las notificaciones de saldo y compras.\n\nPor favor presiona el botón **📱 Vincular Mi WhatsApp**.', { parse_mode: 'Markdown' });
         }
@@ -1898,4 +1900,4 @@ bot.on('callback_query', async (query) => {
 });
 
 module.exports = { verificarBonoReferido };
-console.log('🤖 Terminal de SociosXit (Edición V5 Definitiva + WhatsApp Integration) En línea y a la espera de peticiones...');
+console.log('🤖 Terminal de SociosXit (Edición V5 Definitiva + WhatsApp Mac Auth) En línea y a la espera de peticiones...');
