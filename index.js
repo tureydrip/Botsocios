@@ -9,7 +9,7 @@ const sistemaRecargas = require('./recargas');
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
-const TASA_COP = 3800; // Tasa fija establecida
+const TASA_COP = 3800; // Tasa fija establecid
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
