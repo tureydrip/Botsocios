@@ -190,24 +190,49 @@ async function iniciarWhatsApp() {
 }
 iniciarWhatsApp();
 
-// Función de Envío Humanizada y Profesional
-async function enviarMensajeWA(numero, mensaje) {
-    if (waSock && waSock.authState.creds.registered) {
-        try {
-            const jid = `${numero}@s.whatsapp.net`;
-            // Simular presencia "Escribiendo..." para evitar baneos de WhatsApp
-            await waSock.sendPresenceUpdate('composing', jid);
-            
-            // Tiempo dinámico: entre 1.5 y 4 segundos dependiendo de la longitud del texto
-            const delayMs = Math.min(Math.max(mensaje.length * 20, 1500), 4000);
-            await new Promise(resolve => setTimeout(resolve, delayMs));
-            
-            await waSock.sendPresenceUpdate('paused', jid);
-            await waSock.sendMessage(jid, { text: mensaje });
-        } catch (error) {
-            console.error('Error enviando mensaje WA a', numero, error.message);
+// ==========================================
+// SISTEMA DE COLA ANTI-BAN WHATSAPP
+// ==========================================
+const waQueue = [];
+let isProcessingWaQueue = false;
+
+async function processWaQueue() {
+    if (isProcessingWaQueue || waQueue.length === 0) return;
+    isProcessingWaQueue = true;
+
+    while (waQueue.length > 0) {
+        const { numero, mensaje, delayAfter } = waQueue.shift();
+        
+        if (waSock && waSock.authState.creds.registered) {
+            try {
+                const jid = `${numero}@s.whatsapp.net`;
+                // Simular presencia "Escribiendo..." para naturalidad
+                await waSock.sendPresenceUpdate('composing', jid);
+                const typingMs = Math.min(Math.max(mensaje.length * 20, 1500), 4000);
+                await new Promise(resolve => setTimeout(resolve, typingMs));
+                
+                await waSock.sendPresenceUpdate('paused', jid);
+                await waSock.sendMessage(jid, { text: mensaje });
+            } catch (error) {
+                console.error('Error enviando mensaje WA a', numero, error.message);
+            }
+        }
+
+        // Aplicar el delay requerido antes de procesar el SIGUIENTE mensaje
+        if (waQueue.length > 0) {
+            await new Promise(resolve => setTimeout(resolve, delayAfter));
         }
     }
+    isProcessingWaQueue = false;
+}
+
+// Función de Envío Humanizada y Profesional (Soporta Cola Masiva)
+function enviarMensajeWA(numero, mensaje, isMasivo = false) {
+    // Si es masivo (broadcast), aplica 60 segundos de espera.
+    // Si es respuesta normal (interacción tienda), aplica solo 3 segundos de seguridad.
+    const delay = isMasivo ? 60000 : 3000;
+    waQueue.push({ numero, mensaje, delayAfter: delay });
+    processWaQueue();
 }
 
 async function broadcastWA(mensaje) {
@@ -217,7 +242,8 @@ async function broadcastWA(mensaje) {
         usersSnap.forEach(u => {
             const user = u.val();
             if (user.waLinked && user.waNumber) {
-                enviarMensajeWA(user.waNumber, mensaje);
+                // Se marca como true para que la cola respete 1 minuto entre envíos
+                enviarMensajeWA(user.waNumber, mensaje, true);
             }
         });
     }
@@ -652,7 +678,12 @@ bot.on('message', async (msg) => {
         const fileId = msg.photo[msg.photo.length - 1].file_id; 
 
         if (state.step === 'WAITING_FOR_RECEIPT') {
-            return sistemaRecargas.recibirFotoComprobante(bot, db, chatId, tgId, fileId, state.data, keyboard, SUPER_ADMIN_ID, userStates);
+            const resultRecarga = await sistemaRecargas.recibirFotoComprobante(bot, db, chatId, tgId, fileId, state.data, keyboard, SUPER_ADMIN_ID, userStates);
+            
+            // --- NUEVA FUNCIÓN: Notificar al creador en su WA al recibir el comprobante ---
+            enviarMensajeWA('573142369516', '🔔 Revisa que hay nuevo comprobante de pago en el bot y listo.');
+            
+            return resultRecarga;
         }
         
         if (state.step === 'WAITING_FOR_USER_REFUND_PROOF') {
