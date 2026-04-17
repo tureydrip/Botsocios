@@ -5,7 +5,7 @@ const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion,
 const pino = require('pino');
 const sistemaRecargas = require('./recargas');
 
-// CONFIGURACIÓN MAS
+// CONFIGURACIÓN MASTER
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
@@ -61,11 +61,12 @@ async function iniciarWhatsApp() {
         if (!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
-        const numero = sender.split('@')[0];
+        // Solución Baileys: Limpiar el sufijo :1 o :2 que a veces añade WhatsApp al ID
+        const numero = sender.split('@')[0].split(':')[0]; 
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
 
-        // Buscar al usuario vinculado por su número de WA
+        // Buscar al usuario vinculado por su número de WA exacto
         const uSnap = await get(ref(db, 'users'));
         let webUid = null, webUser = null;
         if (uSnap.exists()) {
@@ -599,7 +600,7 @@ bot.on('message', async (msg) => {
                 await update(ref(db), { [`users/${webUid}/waLinked`]: true, [`users/${webUid}/waNumber`]: state.data.pendingWaNumber });
                 userStates[chatId] = null;
                 enviarMensajeWA(state.data.pendingWaNumber, `🎉 *¡Cuenta Vinculada con Éxito!*\n\nBienvenido a SociosXit. Si quieres comprar desde aquí, simplemente escribe *.shop* en cualquier momento.`);
-                return bot.sendMessage(chatId, `🎉 *¡WhatsApp vinculado exitosamente!*\n\nYa tienes acceso completo. Escribe /start para ver el menú.`, {parse_mode: 'Markdown'});
+                return bot.sendMessage(chatId, `🎉 *¡WhatsApp vinculado exitosamente!*\n\nYa tienes acceso completo. Escribe /start para ver el menú.`, {parse_mode: 'Markdown', ...keyboard});
             } else {
                 return bot.sendMessage(chatId, `❌ Código incorrecto. Verifica en tu WhatsApp e intenta de nuevo:`);
             }
@@ -727,7 +728,14 @@ bot.on('message', async (msg) => {
             msgPerfil += `\n\n🎟️ *Cupón Activo:* Tienes un ${webUser.active_discount}% EXTRA OFF en tu próxima compra.`;
         }
         
-        return bot.sendMessage(chatId, msgPerfil, { parse_mode: 'Markdown' });
+        // Agregar botón para cambiar WhatsApp al perfil
+        const optsPerfil = {
+            inline_keyboard: [
+                [{ text: '🔄 Cambiar Número de WhatsApp', callback_data: 'change_wa' }]
+            ]
+        };
+        
+        return bot.sendMessage(chatId, msgPerfil, { parse_mode: 'Markdown', reply_markup: optsPerfil });
     }
     
     if (text === '🤝 Referidos') {
@@ -1001,7 +1009,7 @@ bot.on('message', async (msg) => {
                     bot.sendMessage(chatId, `✅ Producto *${state.data.name}* creado con éxito.`, { parse_mode: 'Markdown', ...keyboard });
 
                     // NOTIFICACIÓN WHATSAPP CREAR PRODUCTO
-                    broadcastWA(`📦 *¡NUEVO PRODUCTO EN TIENDA!*\n\nEl artículo *${state.data.name}* ya se encuentra disponible. 🛒 Ve a revisarlo.`);
+                    broadcastWA(`📦 *¡NUEVO PRODUCTO EN TIENDA!*\n\nEl artículo *${state.data.name}* ya se encuentra disponible. 🛒 Puedes usar el comando *.shop* para revisarlo.`);
                 }
                 
                 notifySuperAdmin(webUser.username, tgId, 'Creó Producto/Variante', `Garantía: ${warranty}h`);
@@ -1035,7 +1043,7 @@ bot.on('message', async (msg) => {
                 // NOTIFICACIÓN WHATSAPP AÑADIR STOCK
                 const pSnap = await get(ref(db, `products/${state.data.prodId}`));
                 const pName = pSnap.exists() ? pSnap.val().name : 'un producto';
-                broadcastWA(`🔥 *¡RESTOCK EXCLUSIVO!*\n\nAcabamos de agregar nuevas keys para *${pName}*. ¡Corre a comprar antes de que se vuelvan a agotar! 🏃‍♂️💨`);
+                broadcastWA(`🔥 *¡RESTOCK EXCLUSIVO!*\n\nAcabamos de agregar nuevas keys para *${pName}*. ¡Escribe *.shop* y compra antes de que se vuelvan a agotar! 🏃‍♂️💨`);
 
                 userStates[chatId] = null; 
                 return;
@@ -1163,7 +1171,7 @@ bot.on('message', async (msg) => {
                     });
 
                     // NOTIFICACIÓN WHATSAPP AÑADIR SALDO
-                    if (targetWa) enviarMensajeWA(targetWa, `🌟 *¡REGALO DE ADMINISTRADOR!*\n\nEl staff acaba de agregar *$${amount} USD* directamente a tu cuenta. ¡Disfruta tus compras en SociosXit! 🎁`);
+                    if (targetWa) enviarMensajeWA(targetWa, `🌟 *¡REGALO DE ADMINISTRADOR!*\n\nEl staff acaba de agregar *$${amount} USD* directamente a tu cuenta. ¡Aprovecha y compra algo en SociosXit! 🎁`);
                     
                     await verificarBonoReferido(db, bot, foundUid, amount);
                 }
@@ -1541,6 +1549,18 @@ bot.on('callback_query', async (query) => {
     
     bot.answerCallbackQuery(query.id);
 
+    // --- INTERCEPCIÓN BOTÓN CAMBIAR WHATSAPP ---
+    if (data === 'change_wa') {
+        const kb = {
+            inline_keyboard: [
+                [{text: '🇨🇴 Colombia (+57)', callback_data: 'walinkuser|57'}, {text: '🇲🇽 México (+52)', callback_data: 'walinkuser|52'}],
+                [{text: '🌍 Otro País', callback_data: 'walinkuser|otro'}]
+            ]
+        };
+        userStates[chatId] = { step: 'USER_WA_COUNTRY', data: {} };
+        return bot.editMessageText('📱 *CAMBIAR WHATSAPP*\n\nSelecciona el país de tu nuevo número:', {chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown', reply_markup: kb});
+    }
+
     // --- INTERCEPCIÓN DE VINCULACIÓN WA USUARIO ---
     if (data.startsWith('walinkuser|')) {
         const codPais = data.split('|')[1];
@@ -1549,7 +1569,7 @@ bot.on('callback_query', async (query) => {
             return bot.editMessageText('🌍 Escribe el **Código de tu País** (sin el +, solo números. Ejemplo: 51 para Perú):', {chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'});
         } else {
             userStates[chatId] = { step: 'USER_WA_NUMBER', data: { countryCode: codPais } };
-            return bot.editMessageText(`✅ País seleccionado (+${codPais}).\n\nAhora, escribe tu **número de WhatsApp** (SIN el código de país):`, {chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'});
+            return bot.editMessageText(`✅ País seleccionado (+${codPais}).\n\nAhora, escribe tu **nuevo número de WhatsApp** (SIN el código de país):`, {chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'});
         }
     }
 
@@ -1952,29 +1972,53 @@ bot.on('callback_query', async (query) => {
             return bot.sendMessage(chatId, '❌ Proceso de reembolso cancelado por el Admin.'); 
         }
 
-        // --- INTERCEPCIÓN AVISOS RECARGAS ---
+        // --- INTERCEPCIÓN INTELIGENTE AVISOS RECARGAS ---
         if (data.startsWith('ok_rech|') && (adminData.isSuper || adminData.perms.balance)) {
-            const uid = data.split('|')[1];
-            // Se ejecuta la lógica original de tu recarga
-            const result = await sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, uid, adminUsername, tgId, notifySuperAdmin);
+            const pushId = data.split('|')[1];
             
-            // Mandamos notificación a WA
-            const uS = await get(ref(db, `users/${uid}`));
-            if(uS.exists() && uS.val().waLinked) {
-                enviarMensajeWA(uS.val().waNumber, `🌟 *¡TU RECARGA HA SIDO APROBADA!*\n\nTu pago ha sido validado exitosamente y tu saldo ya está disponible en el bot de Telegram. ¡Gracias por elegir SociosXit! 💸🛍️`);
-            }
+            // Ejecutar la recarga original
+            const result = await sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, pushId, adminUsername, tgId, notifySuperAdmin);
+            
+            // Búsqueda inteligente del usuario (en caso de que data.split('|')[1] sea el ID del usuario o el ID de la recarga)
+            try {
+                const usersSnap = await get(ref(db, 'users'));
+                let tUser = null;
+                if (usersSnap.exists()) {
+                    usersSnap.forEach(u => {
+                        if (u.key === pushId) tUser = u.val();
+                        else if (u.val().recharges && u.val().recharges[pushId]) tUser = u.val();
+                    });
+                }
+                
+                if(tUser && tUser.waLinked && tUser.waNumber) {
+                    enviarMensajeWA(tUser.waNumber, `🌟 *¡TU RECARGA HA SIDO APROBADA!*\n\nTu pago ha sido validado exitosamente y tu saldo ya está disponible para comprar en la tienda. ¡Gracias por elegir SociosXit! 💸🛍️`);
+                }
+            } catch (e) { console.log('Aviso WA recarga OK falló silenciosamente', e.message); }
+
             return result;
         }
+
         if (data.startsWith('no_rech|') && (adminData.isSuper || adminData.perms.balance)) {
-            const uid = data.split('|')[1];
-            // Se ejecuta la lógica original de tu recarga
-            const result = await sistemaRecargas.rechazarRecarga(bot, db, chatId, query.message.message_id, uid, adminUsername, tgId, notifySuperAdmin);
+            const pushId = data.split('|')[1];
             
-            // Mandamos notificación a WA
-            const uS = await get(ref(db, `users/${uid}`));
-            if(uS.exists() && uS.val().waLinked) {
-                enviarMensajeWA(uS.val().waNumber, `❌ *AVISO DE RECARGA*\n\nLo sentimos, tu solicitud de recarga ha sido rechazada porque el comprobante no es válido.\nSi crees que es un error, por favor contacta a soporte. 🛡️`);
-            }
+            // Ejecutar rechazo original
+            const result = await sistemaRecargas.rechazarRecarga(bot, db, chatId, query.message.message_id, pushId, adminUsername, tgId, notifySuperAdmin);
+            
+            try {
+                const usersSnap = await get(ref(db, 'users'));
+                let tUser = null;
+                if (usersSnap.exists()) {
+                    usersSnap.forEach(u => {
+                        if (u.key === pushId) tUser = u.val();
+                        else if (u.val().recharges && u.val().recharges[pushId]) tUser = u.val();
+                    });
+                }
+                
+                if(tUser && tUser.waLinked && tUser.waNumber) {
+                    enviarMensajeWA(tUser.waNumber, `❌ *AVISO DE RECARGA*\n\nLo sentimos, tu solicitud de recarga ha sido rechazada porque el comprobante no es válido o está ilegible.\nSi crees que es un error, por favor contacta a soporte en Telegram. 🛡️`);
+                }
+            } catch (e) { console.log('Aviso WA recarga NO falló silenciosamente', e.message); }
+
             return result;
         }
     }
@@ -2125,4 +2169,4 @@ process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
 module.exports = { verificarBonoReferido };
-console.log('🤖 Terminal de SociosXit (V6 Anti-Ban + WhatsApp Shop + Telegram Legacy) En línea y a la espera de peticiones...');
+console.log('🤖 Terminal de SociosXit (V7 Humanización + ShopFix + WA Configs) En línea y a la espera de peticiones...');
