@@ -169,6 +169,7 @@ module.exports = {
         return bot.sendMessage(chatId, '✅ Comprobante enviado exitosamente a los administradores. Por favor espera a que se valide.', keyboard);
     },
 
+    // OPTIMIZACIÓN AVISOS WHATSAPP: Se guarda el receiptId en el perfil del usuario para búsqueda inteligente.
     aprobarRecarga: async (bot, db, chatId, queryMessageId, receiptId, adminUsername, adminTgId, notifySuperAdmin) => {
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: queryMessageId });
         
@@ -193,8 +194,8 @@ module.exports = {
 
             const updates = {};
             updates[`users/${targetWebUid}/balance`] = nuevoSaldo;
-            const rechRef = push(ref(db, `users/${targetWebUid}/recharges`));
-            updates[`users/${targetWebUid}/recharges/${rechRef.key}`] = { amount: amount, date: Date.now() };
+            // Guardamos el receiptId exacto para que el buscador de WhatsApp en index.js lo detecte
+            updates[`users/${targetWebUid}/recharges/${receiptId}`] = { amount: amount, date: Date.now(), status: 'approved' };
 
             await update(ref(db), updates);
 
@@ -207,6 +208,7 @@ module.exports = {
         }
     },
 
+    // OPTIMIZACIÓN AVISOS WHATSAPP: Se guarda un registro de rechazo para la búsqueda inteligente.
     rechazarRecarga: async (bot, db, chatId, queryMessageId, receiptId, adminUsername, adminTgId, notifySuperAdmin) => {
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: queryMessageId });
 
@@ -215,11 +217,19 @@ module.exports = {
             return bot.sendMessage(chatId, '⚠️ Este comprobante ya fue procesado por otro administrador.');
         }
 
-        const targetTgId = receiptSnap.val().tgId;
+        const data = receiptSnap.val();
+        const targetTgId = data.tgId;
+        const targetWebUid = data.webUid; 
+
         await remove(ref(db, `pending_receipts/${receiptId}`));
 
+        // Registramos el rechazo usando el mismo receiptId para habilitar la alerta en WhatsApp
+        await update(ref(db), {
+            [`users/${targetWebUid}/recharges/${receiptId}`]: { amount: 0, date: Date.now(), status: 'rejected' }
+        });
+
         bot.sendMessage(chatId, '❌ Comprobante rechazado.');
-        bot.sendMessage(targetTgId, '❌ *RECARGA RECHAZADA*\n\nTu comprobante no fue válido. Si crees que es un error, por favor contacta al soporte enviando un mensaje directo.', { parse_mode: 'Markdown' });
+        bot.sendMessage(targetTgId, '❌ *RECARGA RECHAZADA*\n\nTu comprobante no fue válido o está ilegible. Si crees que es un error, por favor contacta al soporte enviando un mensaje directo.', { parse_mode: 'Markdown' });
         
         notifySuperAdmin(adminUsername, adminTgId, 'Rechazó Recarga', `Comprobante rechazado para el Telegram ID: ${targetTgId}`);
     }
