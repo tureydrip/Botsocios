@@ -32,36 +32,39 @@ const userStates = {};
 const pendingRef = ref(db, 'pending_receipts');
 let isInitialLoad = true;
 
-// Evita que el bot notifique comprobantes viejos al reiniciar
 onValue(pendingRef, () => {
     isInitialLoad = false;
 }, { onlyOnce: true });
 
 onChildAdded(pendingRef, (snapshot) => {
-    // Si el bot apenas se esta encendiendo, ignora las recargas que ya estaban
     if (isInitialLoad) return; 
 
+    const receiptId = snapshot.key;
     const data = snapshot.val();
+    
     if (data) {
         const msgAdmin = `[ NUEVA RECARGA PENDIENTE ]\n\n` +
+                         `[ID Recarga:] \`${receiptId}\`\n` +
                          `[Usuario:] ${data.username}\n` +
-                         `[Monto:] $${parseFloat(data.amountUsd || 0).toFixed(2)} USD\n` +
-                         `[Pais:] ${data.countryName || 'No especificado'}\n\n` +
-                         `Entra a tu panel web de LUCK XIT OFC para revisar el comprobante y aprobar el pago.`;
+                         `[Monto USD:] $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
+                         `[Pais:] ${data.countryName || 'No especificado'}\n` +
+                         `[Monto Local:] ${data.amountLocal || 'No especificado'}\n` +
+                         `[Comprobante:] ${data.receiptUrl || 'No adjunto'}\n\n` +
+                         `Para APROBAR envie:\n\`/config ${receiptId}\`\n\n` +
+                         `Para RECHAZAR envie:\n\`/rech ${receiptId}\``;
         
-        // Avisa por Telegram al instante
-        bot.sendMessage(SUPER_ADMIN_ID, msgAdmin).catch(() => {});
+        bot.sendMessage(SUPER_ADMIN_ID, msgAdmin, { parse_mode: 'Markdown' }).catch(() => {});
 
-        // Avisa a tu WhatsApp personal si el bot de WA esta activo
-        enviarMensajeWA('573142369516', `[AVISO] Revisa el panel web, ${data.username} acaba de subir un comprobante de pago por $${data.amountUsd} USD.`);
+        enviarMensajeWA('573142369516', `[AVISO PAGO] ${data.username} envio un comprobante de $${parseFloat(data.amountUsd || 0).toFixed(2)} USD. Revisa Telegram para validarlo.`);
     }
 });
 
 // ==========================================
-// SISTEMA DE CONTROL REMOTO DESDE LA WEB (VINCULACION)
+// SISTEMA DE CONTROL REMOTO DESDE LA WEB
 // ==========================================
 let waSock = null;
 
+// Escuchar peticion de vinculacion
 onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
     const cmd = snapshot.val();
     if (cmd && cmd.action === 'request_code') {
@@ -74,16 +77,32 @@ onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
             console.log(`[LUCK XIT OFC] Solicitando codigo WA para la web: ${cmd.number}`);
             const code = await waSock.requestPairingCode(cmd.number);
             
-            // Enviar codigo a la web
             await set(ref(db, 'whatsapp_control/code'), { code: code, timestamp: Date.now() });
-            
-            // Limpiar comando
             await set(ref(db, 'whatsapp_control/command'), null);
             
         } catch (error) {
             console.error('Error generando codigo WA:', error.message);
             await set(ref(db, 'whatsapp_control/code'), { code: 'ERROR: ' + error.message, timestamp: Date.now() });
         }
+    }
+});
+
+// Escuchar peticion de Mensaje Global (Broadcast)
+onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
+    const data = snapshot.val();
+    if (data && data.message) {
+        console.log('[LUCK XIT OFC] Procesando Mensaje Global...');
+        
+        const usersSnap = await get(ref(db, 'users'));
+        if (usersSnap.exists()) {
+            usersSnap.forEach(u => {
+                const user = u.val();
+                if (user.waLinked && user.waNumber) {
+                    enviarMensajeWA(user.waNumber, `[ COMUNICADO OFICIAL ]\n\n${data.message}`, true);
+                }
+            });
+        }
+        await set(ref(db, 'whatsapp_control/broadcast'), null);
     }
 });
 
@@ -129,7 +148,6 @@ async function iniciarWhatsApp() {
 
     waSock.ev.on('creds.update', async () => {
         await saveCreds();
-        // Respaldo automatico en Firebase
         if (fs.existsSync(credsPath)) {
             try {
                 const rawData = fs.readFileSync(credsPath, 'utf8');
@@ -342,7 +360,7 @@ function adaptarProductoLegacy(p) {
 }
 
 // ==========================================
-// PANEL DE ADMINISTRACION TELEGRAM (OPCIONAL)
+// PANEL DE ADMINISTRACION TELEGRAM
 // ==========================================
 
 bot.onText(/\/start/, async (msg) => {
@@ -360,6 +378,68 @@ bot.onText(/\/start/, async (msg) => {
     };
 
     bot.sendMessage(chatId, 'Panel de Control - LUCK XIT OFC\n\nSeleccione una accion:', { reply_markup: kb });
+});
+
+// Comandos de Aprobacion y Rechazo de Pagos
+bot.onText(/\/config (.+)/, async (msg, match) => {
+    if (msg.from.id !== SUPER_ADMIN_ID) return;
+    const receiptId = match[1].trim();
+    
+    const snap = await get(ref(db, `pending_receipts/${receiptId}`));
+    if (!snap.exists()) return bot.sendMessage(msg.chat.id, '[ERROR] Recarga no encontrada o ya fue procesada.');
+    
+    const data = snap.val();
+    const uid = data.uid;
+    const amountUsd = parseFloat(data.amountUsd);
+
+    const uSnap = await get(ref(db, `users/${uid}`));
+    let currentBal = 0; let waNum = null;
+    if (uSnap.exists()) {
+        currentBal = parseFloat(uSnap.val().balance || 0);
+        waNum = uSnap.val().waNumber;
+    }
+
+    const updates = {};
+    updates[`users/${uid}/balance`] = currentBal + amountUsd;
+    updates[`users/${uid}/recharges/${receiptId}/status`] = 'approved';
+    updates[`users/${uid}/recharges/${receiptId}/date`] = Date.now();
+    updates[`pending_receipts/${receiptId}`] = null;
+    
+    await update(ref(db), updates);
+    bot.sendMessage(msg.chat.id, `[EXITO] Recarga de $${amountUsd} USD aprobada para el usuario ${data.username}.`);
+    
+    if (waNum) {
+        enviarMensajeWA(waNum, `[ RECARGA APROBADA ]\n\nSu pago ha sido validado exitosamente. Se han añadido $${amountUsd.toFixed(2)} USD a su saldo.`);
+    }
+});
+
+bot.onText(/\/rech (.+)/, async (msg, match) => {
+    if (msg.from.id !== SUPER_ADMIN_ID) return;
+    const receiptId = match[1].trim();
+    
+    const snap = await get(ref(db, `pending_receipts/${receiptId}`));
+    if (!snap.exists()) return bot.sendMessage(msg.chat.id, '[ERROR] Recarga no encontrada o ya fue procesada.');
+    
+    const data = snap.val();
+    const uid = data.uid;
+
+    const uSnap = await get(ref(db, `users/${uid}`));
+    let waNum = null;
+    if (uSnap.exists()) {
+        waNum = uSnap.val().waNumber;
+    }
+
+    const updates = {};
+    updates[`users/${uid}/recharges/${receiptId}/status`] = 'rejected';
+    updates[`users/${uid}/recharges/${receiptId}/date`] = Date.now();
+    updates[`pending_receipts/${receiptId}`] = null;
+    
+    await update(ref(db), updates);
+    bot.sendMessage(msg.chat.id, `[AVISO] Recarga rechazada para el usuario ${data.username}.`);
+    
+    if (waNum) {
+        enviarMensajeWA(waNum, `[ RECARGA RECHAZADA ]\n\nSu comprobante fue rechazado por el administrador. Contacte a soporte si cree que hubo un error.`);
+    }
 });
 
 bot.on('callback_query', async (query) => {
@@ -395,6 +475,7 @@ bot.on('callback_query', async (query) => {
 
 bot.on('message', async (msg) => {
     if (msg.text && msg.text.startsWith('/start')) return;
+    if (msg.text && (msg.text.startsWith('/config') || msg.text.startsWith('/rech'))) return;
 
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
@@ -443,7 +524,6 @@ bot.on('message', async (msg) => {
     }
 });
 
-// Manejo de cierre seguro
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
