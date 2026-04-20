@@ -44,14 +44,17 @@ onChildAdded(pendingRef, (snapshot) => {
     const data = snapshot.val();
     
     if (data) {
-        const msgWaAdmin = `[ NUEVA RECARGA PENDIENTE ]\n\n` +
-                         `[ID:] ${receiptId}\n` +
-                         `[Usuario:] ${data.username}\n` +
-                         `[Monto USD:] $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
-                         `[Pais:] ${data.countryName || 'No especificado'}\n` +
-                         `[Monto Local:] ${data.amountLocal || 'No especificado'}\n` +
-                         `[Comprobante:] ${data.receiptUrl || 'No adjunto'}\n\n` +
-                         `Ingrese a su panel web de LUCK XIT OFC para revisar y validar este pago.`;
+        // Se toma el final del ID de Firebase para simular un Número de Pedido corto y profesional
+        const shortId = receiptId.slice(-6).toUpperCase();
+
+        const msgWaAdmin = `🔔 *NUEVA RECARGA PENDIENTE*\n\n` +
+                         `*🆔 Ref:* #${shortId}\n` +
+                         `*👤 Usuario:* ${data.username}\n` +
+                         `*💵 Monto (USD):* $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
+                         `*🌎 País:* ${data.countryName || 'No especificado'}\n` +
+                         `*💰 Monto Local:* ${data.amountLocal || 'No especificado'}\n` +
+                         `*🧾 Comprobante:* ${data.receiptUrl || 'No adjunto'}\n\n` +
+                         `👉 _Ingrese a su panel web de LUCK XIT OFC para revisar y validar este pago._`;
         
         enviarMensajeWA(ADMIN_WA_NUMBER, msgWaAdmin);
     }
@@ -96,7 +99,7 @@ onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
             usersSnap.forEach(u => {
                 const user = u.val();
                 if (user.waLinked && user.waNumber) {
-                    enviarMensajeWA(user.waNumber, `[ COMUNICADO OFICIAL ]\n\n${data.message}`, true);
+                    enviarMensajeWA(user.waNumber, `📢 *COMUNICADO OFICIAL*\n\n${data.message}`, true);
                 }
             });
         }
@@ -195,21 +198,21 @@ async function iniciarWhatsApp() {
 
         if (t === '.shop' || t === 'tienda') {
             const pSnap = await get(ref(db, 'products'));
-            let kbText = `[ TIENDA LUCK XIT OFC ]\n\nResponda con el NUMERO del producto que desea visualizar o comprar:\n\n`;
+            let kbText = `🏪 *TIENDA LUCK XIT OFC* 🏪\n\nResponda con el *NÚMERO* del producto que desea visualizar o comprar:\n\n`;
             let pList = [];
             let i = 1;
             
             pSnap.forEach(c => {
                 const p = adaptarProductoLegacy(c.val());
-                kbText += `*${i}.* [Producto] ${p.name}\n`;
+                kbText += `*${i}.* 🎮 ${p.name}\n`;
                 pList.push({ id: c.key, name: p.name, durations: p.durations });
                 i++;
             });
 
-            if(pList.length === 0) return enviarMensajeWA(numero, `[AVISO] La tienda se encuentra vacia en este momento.`);
+            if(pList.length === 0) return enviarMensajeWA(numero, `⚠️ _La tienda se encuentra vacía en este momento. Vuelva más tarde._`);
 
             waUserStates[numero] = { step: 'SHOP_SELECT_PROD', pList };
-            kbText += `\nEjemplo: Escriba 1 para seleccionar la primera opcion.`;
+            kbText += `\n💡 _Ejemplo: Escriba *1* para seleccionar la primera opción._`;
             return enviarMensajeWA(numero, kbText);
         }
 
@@ -219,11 +222,11 @@ async function iniciarWhatsApp() {
             if (state.step === 'SHOP_SELECT_PROD') {
                 const idx = parseInt(t) - 1;
                 if (isNaN(idx) || idx < 0 || idx >= state.pList.length) {
-                    return enviarMensajeWA(numero, `[ERROR] Opcion invalida. Responda con un numero del 1 al ${state.pList.length}.`);
+                    return enviarMensajeWA(numero, `❌ *Opción inválida.* Responda con un número del 1 al ${state.pList.length}.`);
                 }
                 
                 const prod = state.pList[idx];
-                let dText = `[PAQUETE] *${prod.name}*\n\nSeleccione la duracion deseada respondiendo con su NUMERO:\n\n`;
+                let dText = `📦 *PAQUETE:* ${prod.name}\n\n⏱️ Seleccione la *duración* deseada respondiendo con su NÚMERO:\n\n`;
                 let dList = [];
                 let dIdx = 1;
                 
@@ -231,7 +234,7 @@ async function iniciarWhatsApp() {
                     const dur = prod.durations[dId];
                     const stock = dur.keys ? Object.keys(dur.keys).length : 0;
                     if (stock > 0) {
-                        dText += `*${dIdx}.* [Tiempo] ${dur.duration} - *$${dur.price} USD* (${stock} disponibles)\n`;
+                        dText += `*${dIdx}.* ⏳ ${dur.duration} ➖ 💵 *$${dur.price} USD* _(${stock} disp.)_\n`;
                         dList.push({ dId, ...dur });
                         dIdx++;
                     }
@@ -239,7 +242,7 @@ async function iniciarWhatsApp() {
                 
                 if (dList.length === 0) {
                     waUserStates[numero] = null;
-                    return enviarMensajeWA(numero, `[AVISO] Todas las variantes de este producto estan agotadas.`);
+                    return enviarMensajeWA(numero, `⚠️ _Todas las variantes de este producto están agotadas actualmente._`);
                 }
                 
                 waUserStates[numero] = { step: 'SHOP_SELECT_DUR', prodId: prod.id, dList, prodName: prod.name };
@@ -249,18 +252,27 @@ async function iniciarWhatsApp() {
             if (state.step === 'SHOP_SELECT_DUR') {
                 const idx = parseInt(t) - 1;
                 if (isNaN(idx) || idx < 0 || idx >= state.dList.length) {
-                    return enviarMensajeWA(numero, `[ERROR] Opcion invalida.`);
+                    return enviarMensajeWA(numero, `❌ *Opción inválida.* Por favor, ingrese un número válido.`);
                 }
                 const dur = state.dList[idx];
 
                 waUserStates[numero] = { step: 'SHOP_CONFIRM', prodId: state.prodId, durId: dur.dId, durInfo: dur, prodName: state.prodName };
-                return enviarMensajeWA(numero, `[CONFIRMACION DE COMPRA]\n\n[Producto:] ${state.prodName} (${dur.duration})\n[Precio:] $${dur.price} USD\n[Saldo actual:] $${parseFloat(webUser.balance || 0).toFixed(2)} USD\n\nEscriba COMPRAR para proceder con la transaccion.\nEscriba CANCELAR para abortar.`);
+                
+                const confirmMsg = `🧾 *CONFIRMACIÓN DE COMPRA*\n\n` +
+                                 `*🎮 Producto:* ${state.prodName}\n` +
+                                 `*⏳ Duración:* ${dur.duration}\n` +
+                                 `*💵 Precio:* $${dur.price} USD\n` +
+                                 `*💳 Su Saldo:* $${parseFloat(webUser.balance || 0).toFixed(2)} USD\n\n` +
+                                 `✅ Escriba *COMPRAR* para procesar la transacción.\n` +
+                                 `❌ Escriba *CANCELAR* para anular.`;
+                                 
+                return enviarMensajeWA(numero, confirmMsg);
             }
 
             if (state.step === 'SHOP_CONFIRM') {
                 if (t === 'cancelar') {
                     waUserStates[numero] = null;
-                    return enviarMensajeWA(numero, `[AVISO] Compra cancelada exitosamente.`);
+                    return enviarMensajeWA(numero, `🚫 _Compra cancelada exitosamente._`);
                 }
                 if (t === 'comprar') {
                     const { prodId, durId, durInfo, prodName } = state;
@@ -269,11 +281,11 @@ async function iniciarWhatsApp() {
                     
                     if (cB < fPrice) {
                          waUserStates[numero] = null;
-                         return enviarMensajeWA(numero, `[ERROR] Saldo insuficiente.\n\nCuenta con $${cB.toFixed(2)} USD, pero el producto cuesta $${fPrice.toFixed(2)} USD.`);
+                         return enviarMensajeWA(numero, `❌ *Saldo insuficiente.*\n\nCuenta con *$${cB.toFixed(2)} USD*, pero el producto cuesta *$${fPrice.toFixed(2)} USD*. Por favor recargue saldo en la web.`);
                     }
 
                     const pSnapLive = await get(ref(db, `products/${prodId}`));
-                    if(!pSnapLive.exists()) return enviarMensajeWA(numero, `[ERROR] El producto ya no existe en la base de datos.`);
+                    if(!pSnapLive.exists()) return enviarMensajeWA(numero, `⚠️ _El producto ya no existe o fue retirado._`);
                     
                     const prLive = pSnapLive.val();
                     let realDur = null;
@@ -287,15 +299,26 @@ async function iniciarWhatsApp() {
                         let kP = `products/${prodId}/durations/${durId}/keys/${kId}`;
                         if (durId === 'legacy_var') kP = `products/${prodId}/keys/${kId}`;
 
+                        const historyKey = push(ref(db)).key;
+                        const shortOrderId = historyKey.slice(-6).toUpperCase();
+
                         const u = { [kP]: null, [`users/${webUid}/balance`]: cB - fPrice };
-                        u[`users/${webUid}/history/${push(ref(db)).key}`] = { product: `${prodName} - ${durInfo.duration}`, key: kD, price: fPrice, date: Date.now(), refunded: false, warrantyHours: durInfo.warranty || 0 };
+                        u[`users/${webUid}/history/${historyKey}`] = { product: `${prodName} - ${durInfo.duration}`, key: kD, price: fPrice, date: Date.now(), refunded: false, warrantyHours: durInfo.warranty || 0 };
 
                         await update(ref(db), u);
-                        enviarMensajeWA(numero, `[COMPRA EXITOSA]\n\n[Producto:] ${prodName}\n[Duracion:] ${durInfo.duration}\n\n[Su Key es:]\n${kD}\n\nGracias por su compra. - LUCK XIT OFC`);
+                        
+                        const successMsg = `🎉 *¡COMPRA EXITOSA!* 🎉\n\n` +
+                                         `*🆔 Pedido:* #${shortOrderId}\n` +
+                                         `*🎮 Producto:* ${prodName}\n` +
+                                         `*⏳ Duración:* ${durInfo.duration}\n\n` +
+                                         `🔑 *SU KEY / CÓDIGO:*\n\`\`\`${kD}\`\`\`\n\n` +
+                                         `✨ _Gracias por su preferencia. - LUCK XIT OFC_`;
+                                         
+                        enviarMensajeWA(numero, successMsg);
                         waUserStates[numero] = null;
                     } else {
                         waUserStates[numero] = null;
-                        enviarMensajeWA(numero, `[AVISO] El producto se agoto en este momento. Intente con otro o espere un restock.`);
+                        enviarMensajeWA(numero, `⚠️ _Lamentablemente el producto se agotó en este momento. Intente de nuevo más tarde._`);
                     }
                     return;
                 }
