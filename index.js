@@ -1,6 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { initializeApp } = require('firebase/app');
-const { getDatabase, ref, get, update, push, set, remove, onValue } = require('firebase/database');
+const { getDatabase, ref, get, update, push, set, remove, onValue, onChildAdded } = require('firebase/database');
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
@@ -27,7 +27,38 @@ const waUserStates = {};
 const userStates = {};
 
 // ==========================================
-// SISTEMA DE CONTROL REMOTO DESDE LA WEB
+// SISTEMA DE NOTIFICACIONES EN TIEMPO REAL (WEB -> BOT)
+// ==========================================
+const pendingRef = ref(db, 'pending_receipts');
+let isInitialLoad = true;
+
+// Evita que el bot notifique comprobantes viejos al reiniciar
+onValue(pendingRef, () => {
+    isInitialLoad = false;
+}, { onlyOnce: true });
+
+onChildAdded(pendingRef, (snapshot) => {
+    // Si el bot apenas se esta encendiendo, ignora las recargas que ya estaban
+    if (isInitialLoad) return; 
+
+    const data = snapshot.val();
+    if (data) {
+        const msgAdmin = `[ NUEVA RECARGA PENDIENTE ]\n\n` +
+                         `[Usuario:] ${data.username}\n` +
+                         `[Monto:] $${parseFloat(data.amountUsd || 0).toFixed(2)} USD\n` +
+                         `[Pais:] ${data.countryName || 'No especificado'}\n\n` +
+                         `Entra a tu panel web de LUCK XIT OFC para revisar el comprobante y aprobar el pago.`;
+        
+        // Avisa por Telegram al instante
+        bot.sendMessage(SUPER_ADMIN_ID, msgAdmin).catch(() => {});
+
+        // Avisa a tu WhatsApp personal si el bot de WA esta activo
+        enviarMensajeWA('573142369516', `[AVISO] Revisa el panel web, ${data.username} acaba de subir un comprobante de pago por $${data.amountUsd} USD.`);
+    }
+});
+
+// ==========================================
+// SISTEMA DE CONTROL REMOTO DESDE LA WEB (VINCULACION)
 // ==========================================
 let waSock = null;
 
