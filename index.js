@@ -171,10 +171,19 @@ async function iniciarWhatsApp() {
     // SISTEMA DE MENSAJES RECIBIDOS EN WHATSAPP
     waSock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+        if (!msg.message) return;
 
+        const isFromMe = msg.key.fromMe;
         const sender = msg.key.remoteJid;
-        const numero = sender.split('@')[0];
+        
+        // Identificar quién escribe
+        let numero = sender.split('@')[0];
+        
+        // Si el mensaje lo envías tú mismo desde tu celular vinculado al bot
+        if (isFromMe && waSock.user) {
+            numero = waSock.user.id.split(':')[0];
+        }
+
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
 
@@ -184,7 +193,10 @@ async function iniciarWhatsApp() {
         if (numero === ADMIN_WA_NUMBER) {
             
             if (t === '.status' || t === '.estado') {
-                enviarMensajeWA(numero, `⏳ Recopilando base de datos... Por favor espere.`);
+                // Siempre enviará la respuesta a tu chat personal ("Mensaje a mí mismo")
+                const destinoRept = isFromMe ? numero : sender.split('@')[0];
+
+                enviarMensajeWA(destinoRept, `⏳ Recopilando base de datos... Por favor espere.`);
                 
                 try {
                     const [uSnap, pSnap] = await Promise.all([
@@ -210,7 +222,7 @@ async function iniciarWhatsApp() {
                             const isSebas = username === 'sebasxit';
                             const bal = parseFloat(user.balance || 0);
 
-                            // Excluir a sebasxit de la contabilidad
+                            // Excluir a sebasxit de las metricas
                             if (!isSebas) {
                                 if (bal > 0) usuariosConSaldo++;
                                 saldoGlobal += bal;
@@ -263,23 +275,26 @@ async function iniciarWhatsApp() {
                         ? topUsers.map((u, i) => `${i+1}. ${u[0]} - $${u[1].toFixed(2)} USD`).join('\n')
                         : 'Nadie ha comprado este mes.';
 
-                    const msgStatus = `📊 *REPORTE GLOBAL - LUCK XIT OFC* 📊\n\n` +
-                                      `👥 *Usuarios con saldo:* ${usuariosConSaldo}\n` +
-                                      `💰 *Saldo en cuentas:* $${saldoGlobal.toFixed(2)} USD\n` +
-                                      `📦 *Keys en Stock:* ${totalStock}\n\n` +
-                                      `📈 *MÉTRICAS HISTÓRICAS*\n` +
-                                      `📥 *Total Recargado:* $${recargasTotales.toFixed(2)} USD\n` +
-                                      `💸 *Dinero Gastado:* $${gastosTotales.toFixed(2)} USD\n` +
-                                      `🔑 *Total Keys Vendidas:* ${keysCompradas}\n\n` +
-                                      `🏆 *TOP CLIENTES (MES ACTUAL)*\n${topText}\n\n` +
-                                      `_(Nota: Excluye los datos y gastos de "sebasxit")_`;
+                    const msgStatus = `[ REPORTE GLOBAL - LUCK XIT OFC ]\n\n` +
+                                      `[Usuarios con saldo:] ${usuariosConSaldo}\n` +
+                                      `[Saldo en cuentas:] $${saldoGlobal.toFixed(2)} USD\n` +
+                                      `[Keys en Stock:] ${totalStock}\n\n` +
+                                      `[ METRICAS HISTORICAS ]\n` +
+                                      `[Total Recargado:] $${recargasTotales.toFixed(2)} USD\n` +
+                                      `[Dinero Gastado:] $${gastosTotales.toFixed(2)} USD\n` +
+                                      `[Total Keys Vendidas:] ${keysCompradas}\n\n` +
+                                      `[ TOP CLIENTES DEL MES ]\n${topText}\n\n` +
+                                      `(Nota: Excluye los datos de la cuenta maestra)`;
 
-                    return enviarMensajeWA(numero, msgStatus);
+                    return enviarMensajeWA(destinoRept, msgStatus);
                 } catch (error) {
-                    return enviarMensajeWA(numero, `❌ Error al obtener el estado: ${error.message}`);
+                    return enviarMensajeWA(destinoRept, `[ERROR] al obtener el estado: ${error.message}`);
                 }
             }
         }
+
+        // Si es un mensaje tuyo y no es un comando de admin, el bot lo ignora.
+        if (isFromMe) return;
 
         // ==========================================
         // FLUJO NORMAL DE USUARIOS (.shop)
