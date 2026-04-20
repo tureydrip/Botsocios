@@ -179,6 +179,109 @@ async function iniciarWhatsApp() {
         const t = text.trim().toLowerCase();
 
         // ==========================================
+        // COMANDOS DEL ADMINISTRADOR (DESDE WHATSAPP)
+        // ==========================================
+        if (numero === ADMIN_WA_NUMBER) {
+            
+            if (t === '.status' || t === '.estado') {
+                enviarMensajeWA(numero, `⏳ Recopilando base de datos... Por favor espere.`);
+                
+                try {
+                    const [uSnap, pSnap] = await Promise.all([
+                        get(ref(db, 'users')),
+                        get(ref(db, 'products'))
+                    ]);
+
+                    let usuariosConSaldo = 0;
+                    let saldoGlobal = 0;
+                    let gastosTotales = 0;
+                    let recargasTotales = 0;
+                    let keysCompradas = 0;
+                    let gastosMes = {};
+                    
+                    const now = new Date();
+                    const currentMonth = now.getMonth();
+                    const currentYear = now.getFullYear();
+
+                    if (uSnap.exists()) {
+                        uSnap.forEach(u => {
+                            const user = u.val();
+                            const username = (user.username || '').toLowerCase();
+                            const isSebas = username === 'sebasxit';
+                            const bal = parseFloat(user.balance || 0);
+
+                            // Excluir a sebasxit de la contabilidad
+                            if (!isSebas) {
+                                if (bal > 0) usuariosConSaldo++;
+                                saldoGlobal += bal;
+
+                                if (user.recharges) {
+                                    Object.values(user.recharges).forEach(r => {
+                                        if (r.status === 'approved' || r.amount) {
+                                            recargasTotales += parseFloat(r.amountUsd || r.amount || 0);
+                                        }
+                                    });
+                                }
+
+                                if (user.history) {
+                                    Object.values(user.history).forEach(h => {
+                                        if (!h.refunded) {
+                                            keysCompradas++;
+                                            const price = parseFloat(h.price || 0);
+                                            gastosTotales += price;
+
+                                            const hDate = new Date(h.date);
+                                            if (hDate.getMonth() === currentMonth && hDate.getFullYear() === currentYear) {
+                                                gastosMes[user.username] = (gastosMes[user.username] || 0) + price;
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                    }
+
+                    let totalStock = 0;
+                    if (pSnap.exists()) {
+                        pSnap.forEach(p => {
+                            const prod = p.val();
+                            if (prod.keys) totalStock += Object.keys(prod.keys).length;
+                            if (prod.durations) {
+                                Object.values(prod.durations).forEach(d => {
+                                    if (d.keys) totalStock += Object.keys(d.keys).length;
+                                });
+                            }
+                        });
+                    }
+
+                    // Ordenar usuarios que mas gastaron este mes
+                    const topUsers = Object.entries(gastosMes)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3);
+                    
+                    let topText = topUsers.length > 0 
+                        ? topUsers.map((u, i) => `${i+1}. ${u[0]} - $${u[1].toFixed(2)} USD`).join('\n')
+                        : 'Nadie ha comprado este mes.';
+
+                    const msgStatus = `📊 *REPORTE GLOBAL - LUCK XIT OFC* 📊\n\n` +
+                                      `👥 *Usuarios con saldo:* ${usuariosConSaldo}\n` +
+                                      `💰 *Saldo en cuentas:* $${saldoGlobal.toFixed(2)} USD\n` +
+                                      `📦 *Keys en Stock:* ${totalStock}\n\n` +
+                                      `📈 *MÉTRICAS HISTÓRICAS*\n` +
+                                      `📥 *Total Recargado:* $${recargasTotales.toFixed(2)} USD\n` +
+                                      `💸 *Dinero Gastado:* $${gastosTotales.toFixed(2)} USD\n` +
+                                      `🔑 *Total Keys Vendidas:* ${keysCompradas}\n\n` +
+                                      `🏆 *TOP CLIENTES (MES ACTUAL)*\n${topText}\n\n` +
+                                      `_(Nota: Excluye los datos y gastos de "sebasxit")_`;
+
+                    return enviarMensajeWA(numero, msgStatus);
+                } catch (error) {
+                    return enviarMensajeWA(numero, `❌ Error al obtener el estado: ${error.message}`);
+                }
+            }
+        }
+
+        // ==========================================
         // FLUJO NORMAL DE USUARIOS (.shop)
         // ==========================================
         const uSnap = await get(ref(db, 'users'));
