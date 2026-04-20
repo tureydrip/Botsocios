@@ -10,7 +10,7 @@ const path = require('path');
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
-const ADMIN_WA_NUMBER = '573142369516'; 
+const ADMIN_WA_NUMBER = '573142369516'; // <-- TU NÚMERO PERSONAL
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
@@ -173,30 +173,18 @@ async function iniciarWhatsApp() {
         const msg = m.messages[0];
         if (!msg.message) return;
 
-        const isFromMe = msg.key.fromMe;
         const sender = msg.key.remoteJid;
-        
-        // Identificar quién escribe
-        let numero = sender.split('@')[0];
-        
-        // Si el mensaje lo envías tú mismo desde tu celular vinculado al bot
-        if (isFromMe && waSock.user) {
-            numero = waSock.user.id.split(':')[0];
-        }
+        const numero = sender.split('@')[0]; // Identifica el numero de quien escribe
 
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
 
         // ==========================================
-        // COMANDOS DEL ADMINISTRADOR (DESDE WHATSAPP)
+        // COMANDOS DEL ADMINISTRADOR (TÚ DESDE TU WHATSAPP PERSONAL)
         // ==========================================
         if (numero === ADMIN_WA_NUMBER) {
-            
             if (t === '.status' || t === '.estado') {
-                // Siempre enviará la respuesta a tu chat personal ("Mensaje a mí mismo")
-                const destinoRept = isFromMe ? numero : sender.split('@')[0];
-
-                enviarMensajeWA(destinoRept, `⏳ Recopilando base de datos... Por favor espere.`);
+                enviarMensajeWA(numero, `⏳ Recopilando base de datos... Por favor espere.`);
                 
                 try {
                     const [uSnap, pSnap] = await Promise.all([
@@ -286,15 +274,18 @@ async function iniciarWhatsApp() {
                                       `[ TOP CLIENTES DEL MES ]\n${topText}\n\n` +
                                       `(Nota: Excluye los datos de la cuenta maestra)`;
 
-                    return enviarMensajeWA(destinoRept, msgStatus);
+                    enviarMensajeWA(numero, msgStatus);
                 } catch (error) {
-                    return enviarMensajeWA(destinoRept, `[ERROR] al obtener el estado: ${error.message}`);
+                    enviarMensajeWA(numero, `[ERROR] al obtener el estado: ${error.message}`);
                 }
+                return; // Cortar aqui para que no busque comandos de tienda
             }
         }
 
-        // Si es un mensaje tuyo y no es un comando de admin, el bot lo ignora.
-        if (isFromMe) return;
+        // ==========================================
+        // EVITAR BUCLES DEL PROPIO BOT
+        // ==========================================
+        if (msg.key.fromMe) return;
 
         // ==========================================
         // FLUJO NORMAL DE USUARIOS (.shop)
