@@ -10,7 +10,7 @@ const path = require('path');
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
-const ADMIN_WA_NUMBER = '34642459475'; 
+const ADMIN_WA_NUMBER = '573142369516'; 
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
