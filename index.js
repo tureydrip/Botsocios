@@ -10,7 +10,7 @@ const path = require('path');
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
-const ADMIN_WA_NUMBER = '573142369516'; // Tu número de WhatsApp de administrador
+const ADMIN_WA_NUMBER = '573142369516'; 
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
@@ -44,17 +44,15 @@ onChildAdded(pendingRef, (snapshot) => {
     const data = snapshot.val();
     
     if (data) {
-        const msgWaAdmin = `🚨 *NUEVA RECARGA PENDIENTE* 🚨\n\n` +
-                         `🆔 *ID:* ${receiptId}\n` +
-                         `👤 *Usuario:* ${data.username}\n` +
-                         `💰 *Monto USD:* $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
-                         `🌍 *País:* ${data.countryName || 'No especificado'}\n` +
-                         `💵 *Monto Local:* ${data.amountLocal || 'No especificado'}\n` +
-                         `📸 *Comprobante:* ${data.receiptUrl || 'No adjunto'}\n\n` +
-                         `✅ Para APROBAR envíe:\n/config ${receiptId}\n\n` +
-                         `❌ Para RECHAZAR envíe:\n/rech ${receiptId}`;
+        const msgWaAdmin = `[ NUEVA RECARGA PENDIENTE ]\n\n` +
+                         `[ID:] ${receiptId}\n` +
+                         `[Usuario:] ${data.username}\n` +
+                         `[Monto USD:] $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
+                         `[Pais:] ${data.countryName || 'No especificado'}\n` +
+                         `[Monto Local:] ${data.amountLocal || 'No especificado'}\n` +
+                         `[Comprobante:] ${data.receiptUrl || 'No adjunto'}\n\n` +
+                         `Ingrese a su panel web de LUCK XIT OFC para revisar y validar este pago.`;
         
-        // Enviar todos los datos directamente a tu WhatsApp
         enviarMensajeWA(ADMIN_WA_NUMBER, msgWaAdmin);
     }
 });
@@ -179,79 +177,6 @@ async function iniciarWhatsApp() {
         const numero = sender.split('@')[0];
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
-
-        // ==========================================
-        // COMANDOS DEL ADMINISTRADOR (DESDE WHATSAPP)
-        // ==========================================
-        if (numero === ADMIN_WA_NUMBER) {
-            
-            // APROBAR RECARGA
-            if (t.startsWith('/config ')) {
-                const receiptId = text.substring(8).trim();
-                const snap = await get(ref(db, `pending_receipts/${receiptId}`));
-                
-                if (!snap.exists()) {
-                    return enviarMensajeWA(numero, '❌ [ERROR] Recarga no encontrada o ya fue procesada.');
-                }
-                
-                const data = snap.val();
-                const uid = data.uid;
-                const amountUsd = parseFloat(data.amountUsd);
-
-                const uSnap = await get(ref(db, `users/${uid}`));
-                let currentBal = 0; let waNum = null;
-                if (uSnap.exists()) {
-                    currentBal = parseFloat(uSnap.val().balance || 0);
-                    waNum = uSnap.val().waNumber;
-                }
-
-                const updates = {};
-                updates[`users/${uid}/balance`] = currentBal + amountUsd;
-                updates[`users/${uid}/recharges/${receiptId}/status`] = 'approved';
-                updates[`users/${uid}/recharges/${receiptId}/date`] = Date.now();
-                updates[`pending_receipts/${receiptId}`] = null;
-                
-                await update(ref(db), updates);
-                enviarMensajeWA(numero, `✅ [ÉXITO] Recarga de $${amountUsd} USD aprobada para el usuario ${data.username}. Base de datos actualizada.`);
-                
-                if (waNum) {
-                    enviarMensajeWA(waNum, `🎉 *¡RECARGA APROBADA!*\n\nSu pago ha sido validado exitosamente. Se han añadido *$${amountUsd.toFixed(2)} USD* a su saldo de la tienda.`);
-                }
-                return;
-            }
-
-            // RECHAZAR RECARGA
-            if (t.startsWith('/rech ')) {
-                const receiptId = text.substring(6).trim();
-                const snap = await get(ref(db, `pending_receipts/${receiptId}`));
-                
-                if (!snap.exists()) {
-                    return enviarMensajeWA(numero, '❌ [ERROR] Recarga no encontrada o ya fue procesada.');
-                }
-                
-                const data = snap.val();
-                const uid = data.uid;
-
-                const uSnap = await get(ref(db, `users/${uid}`));
-                let waNum = null;
-                if (uSnap.exists()) {
-                    waNum = uSnap.val().waNumber;
-                }
-
-                const updates = {};
-                updates[`users/${uid}/recharges/${receiptId}/status`] = 'rejected';
-                updates[`users/${uid}/recharges/${receiptId}/date`] = Date.now();
-                updates[`pending_receipts/${receiptId}`] = null;
-                
-                await update(ref(db), updates);
-                enviarMensajeWA(numero, `⚠️ [AVISO] Recarga rechazada para el usuario ${data.username}. El ticket fue eliminado.`);
-                
-                if (waNum) {
-                    enviarMensajeWA(waNum, `❌ *AVISO DE RECARGA*\n\nSu comprobante fue rechazado por el administrador al no poder ser validado. Contacte a soporte si cree que hubo un error.`);
-                }
-                return;
-            }
-        }
 
         // ==========================================
         // FLUJO NORMAL DE USUARIOS (.shop)
