@@ -10,6 +10,7 @@ const path = require('path');
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
+const ADMIN_WA_NUMBER = '573142369516'; // Tu número de WhatsApp de administrador
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
@@ -27,7 +28,7 @@ const waUserStates = {};
 const userStates = {};
 
 // ==========================================
-// SISTEMA DE NOTIFICACIONES EN TIEMPO REAL (WEB -> BOT)
+// SISTEMA DE NOTIFICACIONES EN TIEMPO REAL AL WHATSAPP DEL ADMIN
 // ==========================================
 const pendingRef = ref(db, 'pending_receipts');
 let isInitialLoad = true;
@@ -43,19 +44,18 @@ onChildAdded(pendingRef, (snapshot) => {
     const data = snapshot.val();
     
     if (data) {
-        const msgAdmin = `[ NUEVA RECARGA PENDIENTE ]\n\n` +
-                         `[ID Recarga:] \`${receiptId}\`\n` +
-                         `[Usuario:] ${data.username}\n` +
-                         `[Monto USD:] $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
-                         `[Pais:] ${data.countryName || 'No especificado'}\n` +
-                         `[Monto Local:] ${data.amountLocal || 'No especificado'}\n` +
-                         `[Comprobante:] ${data.receiptUrl || 'No adjunto'}\n\n` +
-                         `Para APROBAR envie:\n\`/config ${receiptId}\`\n\n` +
-                         `Para RECHAZAR envie:\n\`/rech ${receiptId}\``;
+        const msgWaAdmin = `🚨 *NUEVA RECARGA PENDIENTE* 🚨\n\n` +
+                         `🆔 *ID:* ${receiptId}\n` +
+                         `👤 *Usuario:* ${data.username}\n` +
+                         `💰 *Monto USD:* $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
+                         `🌍 *País:* ${data.countryName || 'No especificado'}\n` +
+                         `💵 *Monto Local:* ${data.amountLocal || 'No especificado'}\n` +
+                         `📸 *Comprobante:* ${data.receiptUrl || 'No adjunto'}\n\n` +
+                         `✅ Para APROBAR envíe:\n/config ${receiptId}\n\n` +
+                         `❌ Para RECHAZAR envíe:\n/rech ${receiptId}`;
         
-        bot.sendMessage(SUPER_ADMIN_ID, msgAdmin, { parse_mode: 'Markdown' }).catch(() => {});
-
-        enviarMensajeWA('573142369516', `[AVISO PAGO] ${data.username} envio un comprobante de $${parseFloat(data.amountUsd || 0).toFixed(2)} USD. Revisa Telegram para validarlo.`);
+        // Enviar todos los datos directamente a tu WhatsApp
+        enviarMensajeWA(ADMIN_WA_NUMBER, msgWaAdmin);
     }
 });
 
@@ -87,7 +87,7 @@ onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
     }
 });
 
-// Escuchar peticion de Mensaje Global (Broadcast)
+// Escuchar peticion de Mensaje Global (Broadcast) desde la web
 onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
     const data = snapshot.val();
     if (data && data.message) {
@@ -170,7 +170,7 @@ async function iniciarWhatsApp() {
         }
     });
 
-    // SISTEMA .SHOP DESDE WHATSAPP
+    // SISTEMA DE MENSAJES RECIBIDOS EN WHATSAPP
     waSock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
@@ -180,6 +180,82 @@ async function iniciarWhatsApp() {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
 
+        // ==========================================
+        // COMANDOS DEL ADMINISTRADOR (DESDE WHATSAPP)
+        // ==========================================
+        if (numero === ADMIN_WA_NUMBER) {
+            
+            // APROBAR RECARGA
+            if (t.startsWith('/config ')) {
+                const receiptId = text.substring(8).trim();
+                const snap = await get(ref(db, `pending_receipts/${receiptId}`));
+                
+                if (!snap.exists()) {
+                    return enviarMensajeWA(numero, '❌ [ERROR] Recarga no encontrada o ya fue procesada.');
+                }
+                
+                const data = snap.val();
+                const uid = data.uid;
+                const amountUsd = parseFloat(data.amountUsd);
+
+                const uSnap = await get(ref(db, `users/${uid}`));
+                let currentBal = 0; let waNum = null;
+                if (uSnap.exists()) {
+                    currentBal = parseFloat(uSnap.val().balance || 0);
+                    waNum = uSnap.val().waNumber;
+                }
+
+                const updates = {};
+                updates[`users/${uid}/balance`] = currentBal + amountUsd;
+                updates[`users/${uid}/recharges/${receiptId}/status`] = 'approved';
+                updates[`users/${uid}/recharges/${receiptId}/date`] = Date.now();
+                updates[`pending_receipts/${receiptId}`] = null;
+                
+                await update(ref(db), updates);
+                enviarMensajeWA(numero, `✅ [ÉXITO] Recarga de $${amountUsd} USD aprobada para el usuario ${data.username}. Base de datos actualizada.`);
+                
+                if (waNum) {
+                    enviarMensajeWA(waNum, `🎉 *¡RECARGA APROBADA!*\n\nSu pago ha sido validado exitosamente. Se han añadido *$${amountUsd.toFixed(2)} USD* a su saldo de la tienda.`);
+                }
+                return;
+            }
+
+            // RECHAZAR RECARGA
+            if (t.startsWith('/rech ')) {
+                const receiptId = text.substring(6).trim();
+                const snap = await get(ref(db, `pending_receipts/${receiptId}`));
+                
+                if (!snap.exists()) {
+                    return enviarMensajeWA(numero, '❌ [ERROR] Recarga no encontrada o ya fue procesada.');
+                }
+                
+                const data = snap.val();
+                const uid = data.uid;
+
+                const uSnap = await get(ref(db, `users/${uid}`));
+                let waNum = null;
+                if (uSnap.exists()) {
+                    waNum = uSnap.val().waNumber;
+                }
+
+                const updates = {};
+                updates[`users/${uid}/recharges/${receiptId}/status`] = 'rejected';
+                updates[`users/${uid}/recharges/${receiptId}/date`] = Date.now();
+                updates[`pending_receipts/${receiptId}`] = null;
+                
+                await update(ref(db), updates);
+                enviarMensajeWA(numero, `⚠️ [AVISO] Recarga rechazada para el usuario ${data.username}. El ticket fue eliminado.`);
+                
+                if (waNum) {
+                    enviarMensajeWA(waNum, `❌ *AVISO DE RECARGA*\n\nSu comprobante fue rechazado por el administrador al no poder ser validado. Contacte a soporte si cree que hubo un error.`);
+                }
+                return;
+            }
+        }
+
+        // ==========================================
+        // FLUJO NORMAL DE USUARIOS (.shop)
+        // ==========================================
         const uSnap = await get(ref(db, 'users'));
         let webUid = null, webUser = null;
         if (uSnap.exists()) {
@@ -360,9 +436,8 @@ function adaptarProductoLegacy(p) {
 }
 
 // ==========================================
-// PANEL DE ADMINISTRACION TELEGRAM
+// PANEL DE ADMINISTRACION TELEGRAM (REDUCIDO A SOLO VINCULACION)
 // ==========================================
-
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
@@ -377,69 +452,7 @@ bot.onText(/\/start/, async (msg) => {
         ]
     };
 
-    bot.sendMessage(chatId, 'Panel de Control - LUCK XIT OFC\n\nSeleccione una accion:', { reply_markup: kb });
-});
-
-// Comandos de Aprobacion y Rechazo de Pagos
-bot.onText(/\/config (.+)/, async (msg, match) => {
-    if (msg.from.id !== SUPER_ADMIN_ID) return;
-    const receiptId = match[1].trim();
-    
-    const snap = await get(ref(db, `pending_receipts/${receiptId}`));
-    if (!snap.exists()) return bot.sendMessage(msg.chat.id, '[ERROR] Recarga no encontrada o ya fue procesada.');
-    
-    const data = snap.val();
-    const uid = data.uid;
-    const amountUsd = parseFloat(data.amountUsd);
-
-    const uSnap = await get(ref(db, `users/${uid}`));
-    let currentBal = 0; let waNum = null;
-    if (uSnap.exists()) {
-        currentBal = parseFloat(uSnap.val().balance || 0);
-        waNum = uSnap.val().waNumber;
-    }
-
-    const updates = {};
-    updates[`users/${uid}/balance`] = currentBal + amountUsd;
-    updates[`users/${uid}/recharges/${receiptId}/status`] = 'approved';
-    updates[`users/${uid}/recharges/${receiptId}/date`] = Date.now();
-    updates[`pending_receipts/${receiptId}`] = null;
-    
-    await update(ref(db), updates);
-    bot.sendMessage(msg.chat.id, `[EXITO] Recarga de $${amountUsd} USD aprobada para el usuario ${data.username}.`);
-    
-    if (waNum) {
-        enviarMensajeWA(waNum, `[ RECARGA APROBADA ]\n\nSu pago ha sido validado exitosamente. Se han añadido $${amountUsd.toFixed(2)} USD a su saldo.`);
-    }
-});
-
-bot.onText(/\/rech (.+)/, async (msg, match) => {
-    if (msg.from.id !== SUPER_ADMIN_ID) return;
-    const receiptId = match[1].trim();
-    
-    const snap = await get(ref(db, `pending_receipts/${receiptId}`));
-    if (!snap.exists()) return bot.sendMessage(msg.chat.id, '[ERROR] Recarga no encontrada o ya fue procesada.');
-    
-    const data = snap.val();
-    const uid = data.uid;
-
-    const uSnap = await get(ref(db, `users/${uid}`));
-    let waNum = null;
-    if (uSnap.exists()) {
-        waNum = uSnap.val().waNumber;
-    }
-
-    const updates = {};
-    updates[`users/${uid}/recharges/${receiptId}/status`] = 'rejected';
-    updates[`users/${uid}/recharges/${receiptId}/date`] = Date.now();
-    updates[`pending_receipts/${receiptId}`] = null;
-    
-    await update(ref(db), updates);
-    bot.sendMessage(msg.chat.id, `[AVISO] Recarga rechazada para el usuario ${data.username}.`);
-    
-    if (waNum) {
-        enviarMensajeWA(waNum, `[ RECARGA RECHAZADA ]\n\nSu comprobante fue rechazado por el administrador. Contacte a soporte si cree que hubo un error.`);
-    }
+    bot.sendMessage(chatId, 'Panel de Control Opcional - LUCK XIT OFC\n\n(Las notificaciones de pago ahora te llegaran directo al WhatsApp)', { reply_markup: kb });
 });
 
 bot.on('callback_query', async (query) => {
@@ -475,7 +488,6 @@ bot.on('callback_query', async (query) => {
 
 bot.on('message', async (msg) => {
     if (msg.text && msg.text.startsWith('/start')) return;
-    if (msg.text && (msg.text.startsWith('/config') || msg.text.startsWith('/rech'))) return;
 
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
