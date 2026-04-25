@@ -10,7 +10,8 @@ const path = require('path');
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
-const ADMIN_WA_NUMBER = '573142369516'; 
+// Lista de administradores para recibir notificaciones (sin el signo +)
+const ADMIN_WA_NUMBERS = ['573142369516', '34642459475']; 
 
 const firebaseConfig = {
     apiKey: "AIzaSyDrNambFw1VNXSkTR1yGq6_B9jWWA1LsxM",
@@ -47,16 +48,22 @@ onChildAdded(pendingRef, (snapshot) => {
         // Se toma el final del ID de Firebase para simular un Número de Pedido corto y profesional
         const shortId = receiptId.slice(-6).toUpperCase();
 
+        // El mensaje ya no incluye el link en texto, ya que será el pie de foto (caption) de la imagen
         const msgWaAdmin = `🔔 *NUEVA RECARGA PENDIENTE*\n\n` +
                          `*🆔 Ref:* #${shortId}\n` +
                          `*👤 Usuario:* ${data.username}\n` +
                          `*💵 Monto (USD):* $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
                          `*🌎 País:* ${data.countryName || 'No especificado'}\n` +
-                         `*💰 Monto Local:* ${data.amountLocal || 'No especificado'}\n` +
-                         `*🧾 Comprobante:* ${data.receiptUrl || 'No adjunto'}\n\n` +
+                         `*💰 Monto Local:* ${data.amountLocal || 'No especificado'}\n\n` +
                          `👉 _Ingrese a su panel web de LUCK XIT OFC para revisar y validar este pago._`;
         
-        enviarMensajeWA(ADMIN_WA_NUMBER, msgWaAdmin);
+        // Verificamos si existe un link válido para descargar la imagen
+        const imageUrl = data.receiptUrl && data.receiptUrl.startsWith('http') ? data.receiptUrl : null;
+
+        // Enviar notificación a todos los administradores configurados
+        ADMIN_WA_NUMBERS.forEach(adminNumber => {
+            enviarMensajeWA(adminNumber, msgWaAdmin, false, imageUrl);
+        });
     }
 });
 
@@ -339,7 +346,8 @@ async function processWaQueue() {
     isProcessingWaQueue = true;
 
     while (waQueue.length > 0) {
-        const { numero, mensaje, delayAfter } = waQueue.shift();
+        // Se extrae también imageUrl de la cola
+        const { numero, mensaje, delayAfter, imageUrl } = waQueue.shift();
         
         if (waSock && waSock.authState.creds.registered) {
             try {
@@ -349,7 +357,18 @@ async function processWaQueue() {
                 await new Promise(resolve => setTimeout(resolve, typingMs));
                 
                 await waSock.sendPresenceUpdate('paused', jid);
-                await waSock.sendMessage(jid, { text: mensaje });
+
+                // Si hay URL de imagen, Baileys la descarga automáticamente y la envía como foto
+                if (imageUrl) {
+                    await waSock.sendMessage(jid, { 
+                        image: { url: imageUrl }, 
+                        caption: mensaje 
+                    });
+                } else {
+                    // Envío estándar de solo texto
+                    await waSock.sendMessage(jid, { text: mensaje });
+                }
+
             } catch (error) {
                 console.error('Error enviando mensaje WA a', numero, error.message);
             }
@@ -362,9 +381,10 @@ async function processWaQueue() {
     isProcessingWaQueue = false;
 }
 
-function enviarMensajeWA(numero, mensaje, isMasivo = false) {
+// Actualizada para recibir el parámetro imageUrl opcional
+function enviarMensajeWA(numero, mensaje, isMasivo = false, imageUrl = null) {
     const delay = isMasivo ? 60000 : 3000;
-    waQueue.push({ numero, mensaje, delayAfter: delay });
+    waQueue.push({ numero, mensaje, delayAfter: delay, imageUrl });
     processWaQueue();
 }
 
