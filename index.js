@@ -175,6 +175,67 @@ async function iniciarWhatsApp() {
             if (shouldReconnect) iniciarWhatsApp();
         } else if (connection === 'open') {
             console.log('WhatsApp: Conectado exitosamente y blindado. - LUCK XIT OFC');
+
+            // ============================================================
+            // [NUEVO] ADAPTACION: ESCUCHAR COMPRAS DE CLAN DESDE LA WEB
+            // ============================================================
+            console.log('[LEVEL UP] Iniciando oyente de órdenes de Clan Level Up...');
+            const clanOrdersRef = ref(db, 'clan_level_up_orders');
+            let isInitialClanLoad = true;
+
+            // Evitar procesar histórico al arrancar (igual que con los recibos)
+            onValue(clanOrdersRef, () => { isInitialClanLoad = false; }, { onlyOnce: true });
+
+            onChildAdded(clanOrdersRef, async (snapshot) => {
+                if (isInitialClanLoad) return; 
+
+                const orderId = snapshot.key;
+                const orderData = snapshot.val();
+
+                // 1. Filtrar solo órdenes pendientes y no procesadas por el bot
+                if (orderData && orderData.status === 'Pendiente' && !orderData.processed) {
+                    console.log(`[LEVEL UP] Nueva orden web detectada: ${orderId} de ${orderData.username}`);
+
+                    // Se toma el final del ID de la orden para que el admin tenga una referencia corta
+                    const shortId = orderId.slice(-6).toUpperCase();
+
+                    // 2. Construir el mensaje para los administradores
+                    const adminMsg = `🚨 *NOTIFICACIÓN WEB: COMPRA LEVEL UP* 🚨\n\n` +
+                                     `*🆔 Pedido:* #${shortId}\n` +
+                                     `*👤 Cliente:* ${orderData.username}\n` +
+                                     `*UID:* ${orderData.uid}\n` +
+                                     `*📱 WhatsApp:* ${orderData.waNumber}\n\n` +
+                                     `🛒 *Producto:* ${orderData.product}\n` +
+                                     `💰 *Pago:* $${parseFloat(orderData.price).toFixed(2)} USD (Descontado de la Web)\n\n` +
+                                     `🛠️ _Acción requerida: Contactar al usuario e iniciar servicio de 4 bots (8h)._`;
+
+                    // 3. Enviar el mensaje a todos los administradores vía WhatsApp (usando la cola anti-ban)
+                    ADMIN_WA_NUMBERS.forEach(adminNum => {
+                        // isMasivo = false (delay corto),imageUrl = null (solo texto)
+                        enviarMensajeWA(adminNum, adminMsg, false, null); 
+                    });
+
+                    // 4. (Opcional) Notificar también al usuario si vinculó su WhatsApp en el bot
+                    if (orderData.waNumber && orderData.waNumber !== 'No vinculado' && orderData.waNumber.length > 5) {
+                        const userMsg = `✅ *LUCK XIT OFC - CONFIRMACIÓN DE COMPRA*\n\n` +
+                                        `Hola ${orderData.username}, hemos recibido tu orden de "${orderData.product}".\n\nUn administrador se pondrá en contacto contigo en breve vía WhatsApp para coordinar el servicio.\n\n¡Gracias por tu preferencia!`;
+                        enviarMensajeWA(orderData.waNumber, userMsg, false, null);
+                    }
+
+                    // 5. Marcar la orden como procesada en Firebase para no repetirla
+                    const updates = {};
+                    updates[`clan_level_up_orders/${orderId}/processed`] = true;
+                    updates[`clan_level_up_orders/${orderId}/status`] = 'Notificado a Admins';
+                    
+                    try {
+                        await update(ref(db), updates);
+                        console.log(`[LEVEL UP] Orden ${shortId} marcada como procesada.`);
+                    } catch (e) {
+                        console.error(`[LEVEL UP] Error marcando orden ${orderId} como procesada:`, e.message);
+                    }
+                }
+            });
+            // ============================================================
         }
     });
 
