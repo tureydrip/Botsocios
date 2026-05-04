@@ -38,17 +38,16 @@ onValue(pendingRef, () => {
     isInitialLoad = false;
 }, { onlyOnce: true });
 
-onChildAdded(pendingRef, (snapshot) => {
+onChildAdded(pendingRef, async (snapshot) => {
     if (isInitialLoad) return; 
 
     const receiptId = snapshot.key;
     const data = snapshot.val();
     
-    if (data) {
-        // Se toma el final del ID de Firebase para simular un Número de Pedido corto y profesional
+    // [FIX] Verificamos que no haya sido notificado previamente
+    if (data && !data.notified) {
         const shortId = receiptId.slice(-6).toUpperCase();
 
-        // El mensaje ya no incluye el link en texto, ya que será el pie de foto (caption) de la imagen
         const msgWaAdmin = `🔔 *NUEVA RECARGA PENDIENTE*\n\n` +
                          `*🆔 Ref:* #${shortId}\n` +
                          `*👤 Usuario:* ${data.username}\n` +
@@ -57,13 +56,18 @@ onChildAdded(pendingRef, (snapshot) => {
                          `*💰 Monto Local:* ${data.amountLocal || 'No especificado'}\n\n` +
                          `👉 _Ingrese a su panel web de LUCK XIT OFC para revisar y validar este pago._`;
         
-        // Verificamos si existe un link válido para descargar la imagen
         const imageUrl = data.receiptUrl && data.receiptUrl.startsWith('http') ? data.receiptUrl : null;
 
-        // Enviar notificación a todos los administradores configurados
         ADMIN_WA_NUMBERS.forEach(adminNumber => {
             enviarMensajeWA(adminNumber, msgWaAdmin, false, imageUrl);
         });
+
+        // [FIX] Marcamos la recarga como notificada para evitar repeticiones de Baileys/Firebase
+        try {
+            await update(ref(db, `pending_receipts/${receiptId}`), { notified: true });
+        } catch (error) {
+            console.error('Error marcando recibo como notificado:', error.message);
+        }
     }
 });
 
@@ -72,7 +76,6 @@ onChildAdded(pendingRef, (snapshot) => {
 // ==========================================
 let waSock = null;
 
-// Escuchar peticion de vinculacion
 onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
     const cmd = snapshot.val();
     if (cmd && cmd.action === 'request_code') {
@@ -95,7 +98,6 @@ onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
     }
 });
 
-// Escuchar peticion de Mensaje Global (Broadcast) desde la web
 onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
     const data = snapshot.val();
     if (data && data.message) {
@@ -176,14 +178,10 @@ async function iniciarWhatsApp() {
         } else if (connection === 'open') {
             console.log('WhatsApp: Conectado exitosamente y blindado. - LUCK XIT OFC');
 
-            // ============================================================
-            // [NUEVO] ADAPTACION: ESCUCHAR COMPRAS DE CLAN DESDE LA WEB
-            // ============================================================
             console.log('[LEVEL UP] Iniciando oyente de órdenes de Clan Level Up...');
             const clanOrdersRef = ref(db, 'clan_level_up_orders');
             let isInitialClanLoad = true;
 
-            // Evitar procesar histórico al arrancar (igual que con los recibos)
             onValue(clanOrdersRef, () => { isInitialClanLoad = false; }, { onlyOnce: true });
 
             onChildAdded(clanOrdersRef, async (snapshot) => {
@@ -192,14 +190,11 @@ async function iniciarWhatsApp() {
                 const orderId = snapshot.key;
                 const orderData = snapshot.val();
 
-                // 1. Filtrar solo órdenes pendientes y no procesadas por el bot
                 if (orderData && orderData.status === 'Pendiente' && !orderData.processed) {
                     console.log(`[LEVEL UP] Nueva orden web detectada: ${orderId} de ${orderData.username}`);
 
-                    // Se toma el final del ID de la orden para que el admin tenga una referencia corta
                     const shortId = orderId.slice(-6).toUpperCase();
 
-                    // 2. Construir el mensaje para los administradores
                     const adminMsg = `🚨 *NOTIFICACIÓN WEB: COMPRA LEVEL UP* 🚨\n\n` +
                                      `*🆔 Pedido:* #${shortId}\n` +
                                      `*👤 Cliente:* ${orderData.username}\n` +
@@ -209,20 +204,16 @@ async function iniciarWhatsApp() {
                                      `💰 *Pago:* $${parseFloat(orderData.price).toFixed(2)} USD (Descontado de la Web)\n\n` +
                                      `🛠️ _Acción requerida: Contactar al usuario e iniciar servicio de 4 bots (8h)._`;
 
-                    // 3. Enviar el mensaje a todos los administradores vía WhatsApp (usando la cola anti-ban)
                     ADMIN_WA_NUMBERS.forEach(adminNum => {
-                        // isMasivo = false (delay corto),imageUrl = null (solo texto)
                         enviarMensajeWA(adminNum, adminMsg, false, null); 
                     });
 
-                    // 4. (Opcional) Notificar también al usuario si vinculó su WhatsApp en el bot
                     if (orderData.waNumber && orderData.waNumber !== 'No vinculado' && orderData.waNumber.length > 5) {
                         const userMsg = `✅ *LUCK XIT OFC - CONFIRMACIÓN DE COMPRA*\n\n` +
                                         `Hola ${orderData.username}, hemos recibido tu orden de "${orderData.product}".\n\nUn administrador se pondrá en contacto contigo en breve vía WhatsApp para coordinar el servicio.\n\n¡Gracias por tu preferencia!`;
                         enviarMensajeWA(orderData.waNumber, userMsg, false, null);
                     }
 
-                    // 5. Marcar la orden como procesada en Firebase para no repetirla
                     const updates = {};
                     updates[`clan_level_up_orders/${orderId}/processed`] = true;
                     updates[`clan_level_up_orders/${orderId}/status`] = 'Notificado a Admins';
@@ -235,12 +226,14 @@ async function iniciarWhatsApp() {
                     }
                 }
             });
-            // ============================================================
         }
     });
 
     // SISTEMA DE MENSAJES RECIBIDOS EN WHATSAPP
     waSock.ev.on('messages.upsert', async m => {
+        // [FIX] Esto evita que el bot responda a confirmaciones de lectura, actualizaciones de estado, etc.
+        if (m.type !== 'notify') return; 
+
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
 
@@ -249,9 +242,6 @@ async function iniciarWhatsApp() {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
 
-        // ==========================================
-        // FLUJO NORMAL DE USUARIOS (.shop)
-        // ==========================================
         const uSnap = await get(ref(db, 'users'));
         let webUid = null, webUser = null;
         if (uSnap.exists()) {
@@ -370,11 +360,6 @@ async function iniciarWhatsApp() {
                         const historyKey = push(ref(db)).key;
                         const shortOrderId = historyKey.slice(-6).toUpperCase();
 
-                        const u = { [kP]: null, [`users/${webUid}/balance`]: cB - fPrice };
-                        u[`users/${webUid}/history/${historyKey}`] = { product: `${prodName} - ${durInfo.duration}`, key: kD, price: fPrice, date: Date.now(), refunded: false, warrantyHours: durInfo.warranty || 0 };
-
-                        await update(ref(db), u);
-                        
                         const successMsg = `🎉 *¡COMPRA EXITOSA!* 🎉\n\n` +
                                          `*🆔 Pedido:* #${shortOrderId}\n` +
                                          `*🎮 Producto:* ${prodName}\n` +
@@ -382,8 +367,17 @@ async function iniciarWhatsApp() {
                                          `🔑 *SU KEY / CÓDIGO:*\n\`\`\`${kD}\`\`\`\n\n` +
                                          `✨ _Gracias por su preferencia. - LUCK XIT OFC_`;
                                          
+                        // Se envía la key AL PORTAPAPELES (chat del cliente) PRIMERO
                         enviarMensajeWA(numero, successMsg);
                         waUserStates[numero] = null;
+
+                        // Se borra de la DB una vez garantizado el inicio del envío
+                        setTimeout(async () => {
+                            const u = { [kP]: null, [`users/${webUid}/balance`]: cB - fPrice };
+                            u[`users/${webUid}/history/${historyKey}`] = { product: `${prodName} - ${durInfo.duration}`, key: kD, price: fPrice, date: Date.now(), refunded: false, warrantyHours: durInfo.warranty || 0 };
+                            await update(ref(db), u);
+                        }, 500);
+                        
                     } else {
                         waUserStates[numero] = null;
                         enviarMensajeWA(numero, `⚠️ _Lamentablemente el producto se agotó en este momento. Intente de nuevo más tarde._`);
@@ -407,7 +401,6 @@ async function processWaQueue() {
     isProcessingWaQueue = true;
 
     while (waQueue.length > 0) {
-        // Se extrae también imageUrl de la cola
         const { numero, mensaje, delayAfter, imageUrl } = waQueue.shift();
         
         if (waSock && waSock.authState.creds.registered) {
@@ -419,14 +412,12 @@ async function processWaQueue() {
                 
                 await waSock.sendPresenceUpdate('paused', jid);
 
-                // Si hay URL de imagen, Baileys la descarga automáticamente y la envía como foto
                 if (imageUrl) {
                     await waSock.sendMessage(jid, { 
                         image: { url: imageUrl }, 
                         caption: mensaje 
                     });
                 } else {
-                    // Envío estándar de solo texto
                     await waSock.sendMessage(jid, { text: mensaje });
                 }
 
@@ -442,7 +433,6 @@ async function processWaQueue() {
     isProcessingWaQueue = false;
 }
 
-// Actualizada para recibir el parámetro imageUrl opcional
 function enviarMensajeWA(numero, mensaje, isMasivo = false, imageUrl = null) {
     const delay = isMasivo ? 60000 : 3000;
     waQueue.push({ numero, mensaje, delayAfter: delay, imageUrl });
@@ -465,7 +455,7 @@ function adaptarProductoLegacy(p) {
 }
 
 // ==========================================
-// PANEL DE ADMINISTRACION TELEGRAM (REDUCIDO A SOLO VINCULACION)
+// PANEL DE ADMINISTRACION TELEGRAM 
 // ==========================================
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
@@ -475,44 +465,16 @@ bot.onText(/\/start/, async (msg) => {
 
     userStates[chatId] = null; 
 
+    // Botones principales en el teclado inferior
     const kb = {
-        inline_keyboard: [
-            [{ text: '[ Vincular WhatsApp por Telegram ]', callback_data: 'walinkadmin_menu' }]
-        ]
+        keyboard: [
+            [{ text: '📱 Vincular WhatsApp' }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true
     };
 
     bot.sendMessage(chatId, 'Panel de Control Opcional - LUCK XIT OFC\n\n(Las notificaciones de pago ahora te llegaran directo al WhatsApp)', { reply_markup: kb });
-});
-
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const tgId = query.from.id;
-    const data = query.data;
-
-    bot.answerCallbackQuery(query.id);
-
-    if (tgId !== SUPER_ADMIN_ID) return;
-
-    if (data === 'walinkadmin_menu') {
-        const kb = {
-            inline_keyboard: [
-                [{text: 'Colombia (+57)', callback_data: 'walinkadmin|57'}, {text: 'Mexico (+52)', callback_data: 'walinkadmin|52'}],
-                [{text: 'Otro Pais (Escribir codigo)', callback_data: 'walinkadmin|otro'}]
-            ]
-        };
-        return bot.editMessageText('VINCULAR BOT A WHATSAPP\n\nSeleccione el pais del numero destino que alojara el bot:', {chat_id: chatId, message_id: query.message.message_id, reply_markup: kb});
-    }
-
-    if (data.startsWith('walinkadmin|')) {
-        const codPais = data.split('|')[1];
-        if (codPais === 'otro') {
-            userStates[chatId] = { step: 'ADMIN_WA_CUSTOM_COUNTRY', data: {} };
-            return bot.editMessageText('Escriba el Codigo de Pais del Bot (solo numeros):', {chat_id: chatId, message_id: query.message.message_id});
-        } else {
-            userStates[chatId] = { step: 'ADMIN_WA_NUMBER', data: { countryCode: codPais } };
-            return bot.editMessageText(`Pais seleccionado (+${codPais}).\n\nEscriba el numero del Bot de WhatsApp (sin el codigo de pais):`, {chat_id: chatId, message_id: query.message.message_id});
-        }
-    }
 });
 
 bot.on('message', async (msg) => {
@@ -525,8 +487,34 @@ bot.on('message', async (msg) => {
     if (tgId !== SUPER_ADMIN_ID) return;
     if (!text) return;
 
+    // Manejo del botón de menú persistente
+    if (text === '📱 Vincular WhatsApp') {
+        userStates[chatId] = { step: 'ADMIN_WA_SELECT_COUNTRY', data: {} };
+        const kb = {
+            keyboard: [
+                [{text: '🇨🇴 Colombia (+57)'}, {text: '🇲🇽 Mexico (+52)'}],
+                [{text: '🌍 Otro Pais'}]
+            ],
+            resize_keyboard: true
+        };
+        return bot.sendMessage(chatId, 'VINCULAR BOT A WHATSAPP\n\nSeleccione el pais del numero destino que alojara el bot:', { reply_markup: kb });
+    }
+
     if (userStates[chatId]) {
         const state = userStates[chatId];
+
+        if (state.step === 'ADMIN_WA_SELECT_COUNTRY') {
+            if (text === '🇨🇴 Colombia (+57)') {
+                userStates[chatId] = { step: 'ADMIN_WA_NUMBER', data: { countryCode: '57' } };
+                return bot.sendMessage(chatId, `Pais seleccionado (+57).\n\nEscriba el numero del Bot de WhatsApp (sin el codigo de pais):`, { reply_markup: { remove_keyboard: true } });
+            } else if (text === '🇲🇽 Mexico (+52)') {
+                userStates[chatId] = { step: 'ADMIN_WA_NUMBER', data: { countryCode: '52' } };
+                return bot.sendMessage(chatId, `Pais seleccionado (+52).\n\nEscriba el numero del Bot de WhatsApp (sin el codigo de pais):`, { reply_markup: { remove_keyboard: true } });
+            } else if (text === '🌍 Otro Pais') {
+                userStates[chatId] = { step: 'ADMIN_WA_CUSTOM_COUNTRY', data: {} };
+                return bot.sendMessage(chatId, 'Escriba el Codigo de Pais del Bot (solo numeros):', { reply_markup: { remove_keyboard: true } });
+            }
+        }
 
         if (state.step === 'ADMIN_WA_CUSTOM_COUNTRY') {
             const code = text.replace('+', '').trim();
