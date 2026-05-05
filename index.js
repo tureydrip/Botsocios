@@ -44,7 +44,7 @@ onChildAdded(pendingRef, async (snapshot) => {
     const receiptId = snapshot.key;
     const data = snapshot.val();
     
-    // [FIX] Verificamos que no haya sido notificado previamente
+    // Verificamos que no haya sido notificado previamente
     if (data && !data.notified) {
         const shortId = receiptId.slice(-6).toUpperCase();
 
@@ -62,7 +62,7 @@ onChildAdded(pendingRef, async (snapshot) => {
             enviarMensajeWA(adminNumber, msgWaAdmin, false, imageUrl);
         });
 
-        // [FIX] Marcamos la recarga como notificada para evitar repeticiones de Baileys/Firebase
+        // Marcamos la recarga como notificada para evitar repeticiones
         try {
             await update(ref(db, `pending_receipts/${receiptId}`), { notified: true });
         } catch (error) {
@@ -198,7 +198,7 @@ async function iniciarWhatsApp() {
                     const adminMsg = `🚨 *NOTIFICACIÓN WEB: COMPRA LEVEL UP* 🚨\n\n` +
                                      `*🆔 Pedido:* #${shortId}\n` +
                                      `*👤 Cliente:* ${orderData.username}\n` +
-                                     `*UID:* ${orderData.uid}\n` +
+                                     `*🔰 ID del Clan:* ${orderData.clanId}\n` +
                                      `*📱 WhatsApp:* ${orderData.waNumber}\n\n` +
                                      `🛒 *Producto:* ${orderData.product}\n` +
                                      `💰 *Pago:* $${parseFloat(orderData.price).toFixed(2)} USD (Descontado de la Web)\n\n` +
@@ -231,7 +231,7 @@ async function iniciarWhatsApp() {
 
     // SISTEMA DE MENSAJES RECIBIDOS EN WHATSAPP
     waSock.ev.on('messages.upsert', async m => {
-        // [FIX] Esto evita que el bot responda a confirmaciones de lectura, actualizaciones de estado, etc.
+        // Evitar que el bot responda a confirmaciones de lectura, estados, etc.
         if (m.type !== 'notify') return; 
 
         const msg = m.messages[0];
@@ -367,11 +367,9 @@ async function iniciarWhatsApp() {
                                          `🔑 *SU KEY / CÓDIGO:*\n\`\`\`${kD}\`\`\`\n\n` +
                                          `✨ _Gracias por su preferencia. - LUCK XIT OFC_`;
                                          
-                        // Se envía la key AL PORTAPAPELES (chat del cliente) PRIMERO
                         enviarMensajeWA(numero, successMsg);
                         waUserStates[numero] = null;
 
-                        // Se borra de la DB una vez garantizado el inicio del envío
                         setTimeout(async () => {
                             const u = { [kP]: null, [`users/${webUid}/balance`]: cB - fPrice };
                             u[`users/${webUid}/history/${historyKey}`] = { product: `${prodName} - ${durInfo.duration}`, key: kD, price: fPrice, date: Date.now(), refunded: false, warrantyHours: durInfo.warranty || 0 };
@@ -465,7 +463,6 @@ bot.onText(/\/start/, async (msg) => {
 
     userStates[chatId] = null; 
 
-    // Botones principales en el teclado inferior
     const kb = {
         keyboard: [
             [{ text: '📱 Vincular WhatsApp' }]
@@ -487,7 +484,6 @@ bot.on('message', async (msg) => {
     if (tgId !== SUPER_ADMIN_ID) return;
     if (!text) return;
 
-    // Manejo del botón de menú persistente
     if (text === '📱 Vincular WhatsApp') {
         userStates[chatId] = { step: 'ADMIN_WA_SELECT_COUNTRY', data: {} };
         const kb = {
