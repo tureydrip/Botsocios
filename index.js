@@ -29,27 +29,25 @@ const waUserStates = {};
 const userStates = {};
 
 // ==========================================
-// SISTEMA DE NOTIFICACIONES EN TIEMPO REAL AL WHATSAPP DEL ADMIN
+// SISTEMA DE NOTIFICACIONES (FIREBASE -> WHATSAPP)
+// (Ubicado fuera de la reconexión de Baileys para evitar bucles de spam)
 // ==========================================
-const pendingRef = ref(db, 'pending_receipts');
-let isInitialLoad = true;
 
-onValue(pendingRef, () => {
-    isInitialLoad = false;
-}, { onlyOnce: true });
+// 1. OYENTE DE RECARGAS DE SALDO
+const pendingRef = ref(db, 'pending_receipts');
+let isInitialLoadRecargas = true;
+
+onValue(pendingRef, () => { isInitialLoadRecargas = false; }, { onlyOnce: true });
 
 onChildAdded(pendingRef, async (snapshot) => {
-    if (isInitialLoad) return; 
+    if (isInitialLoadRecargas) return; 
 
     const receiptId = snapshot.key;
     const data = snapshot.val();
     
-    // FILTRO ANTI-SPAM PARA FIREBASE: Solo notificar si no se ha notificado antes
+    // Filtro estricto: solo notifica si no está marcado como notificado
     if (data && !data.notified) {
-        // Se toma el final del ID de Firebase para simular un Número de Pedido corto y profesional
         const shortId = receiptId.slice(-6).toUpperCase();
-
-        // El mensaje ya no incluye el link en texto, ya que será el pie de foto (caption) de la imagen
         const msgWaAdmin = `🔔 *NUEVA RECARGA PENDIENTE*\n\n` +
                          `*🆔 Ref:* #${shortId}\n` +
                          `*👤 Usuario:* ${data.username}\n` +
@@ -58,19 +56,59 @@ onChildAdded(pendingRef, async (snapshot) => {
                          `*💰 Monto Local:* ${data.amountLocal || 'No especificado'}\n\n` +
                          `👉 _Ingrese a su panel web de LUCK XIT OFC para revisar y validar este pago._`;
         
-        // Verificamos si existe un link válido para descargar la imagen
         const imageUrl = data.receiptUrl && data.receiptUrl.startsWith('http') ? data.receiptUrl : null;
 
-        // Enviar notificación a todos los administradores configurados
         ADMIN_WA_NUMBERS.forEach(adminNumber => {
             enviarMensajeWA(adminNumber, msgWaAdmin, false, imageUrl);
         });
 
-        // Marcar en la base de datos que ya fue notificado
         try {
             await update(ref(db, `pending_receipts/${receiptId}`), { notified: true });
         } catch (error) {
             console.error('Error marcando recibo como notificado:', error.message);
+        }
+    }
+});
+
+// 2. OYENTE DE COMPRAS WEB (CLAN LEVEL UP) - ¡RESTAURADO!
+const clanOrdersRef = ref(db, 'clan_level_up_orders');
+let isInitialClanLoad = true;
+
+onValue(clanOrdersRef, () => { isInitialClanLoad = false; }, { onlyOnce: true });
+
+onChildAdded(clanOrdersRef, async (snapshot) => {
+    if (isInitialClanLoad) return; 
+
+    const orderId = snapshot.key;
+    const orderData = snapshot.val();
+
+    if (orderData && orderData.status === 'Pendiente' && !orderData.processed) {
+        console.log(`[LEVEL UP] Nueva orden web detectada: ${orderId} de ${orderData.username}`);
+        const shortId = orderId.slice(-6).toUpperCase();
+
+        const adminMsg = `🚨 *NOTIFICACIÓN WEB: COMPRA LEVEL UP* 🚨\n\n` +
+                         `*🆔 Pedido:* #${shortId}\n` +
+                         `*👤 Cliente:* ${orderData.username}\n` +
+                         `*🔰 ID del Clan:* ${orderData.clanId || 'No especificado'}\n` +
+                         `*📱 WhatsApp:* ${orderData.waNumber}\n\n` +
+                         `🛒 *Producto:* ${orderData.product}\n` +
+                         `💰 *Pago:* $${parseFloat(orderData.price).toFixed(2)} USD (Descontado de la Web)\n\n` +
+                         `🛠️ _Acción requerida: Contactar al usuario e iniciar servicio de 4 bots (8h)._`;
+
+        ADMIN_WA_NUMBERS.forEach(adminNum => {
+            enviarMensajeWA(adminNum, adminMsg, false, null); 
+        });
+
+        if (orderData.waNumber && orderData.waNumber !== 'No vinculado' && orderData.waNumber.length > 5) {
+            const userMsg = `✅ *LUCK XIT OFC - CONFIRMACIÓN DE COMPRA*\n\n` +
+                            `Hola ${orderData.username}, hemos recibido tu orden de "${orderData.product}".\n\nUn administrador se pondrá en contacto contigo en breve vía WhatsApp para coordinar el servicio.\n\n¡Gracias por tu preferencia!`;
+            enviarMensajeWA(orderData.waNumber, userMsg, false, null);
+        }
+
+        try {
+            await update(ref(db, `clan_level_up_orders/${orderId}`), { processed: true, status: 'Notificado a Admins' });
+        } catch (e) {
+            console.error(`[LEVEL UP] Error marcando orden ${orderId} como procesada:`, e.message);
         }
     }
 });
@@ -80,7 +118,6 @@ onChildAdded(pendingRef, async (snapshot) => {
 // ==========================================
 let waSock = null;
 
-// Escuchar peticion de vinculacion
 onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
     const cmd = snapshot.val();
     if (cmd && cmd.action === 'request_code') {
@@ -103,12 +140,10 @@ onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
     }
 });
 
-// Escuchar peticion de Mensaje Global (Broadcast) desde la web
 onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
     const data = snapshot.val();
     if (data && data.message) {
         console.log('[LUCK XIT OFC] Procesando Mensaje Global...');
-        
         const usersSnap = await get(ref(db, 'users'));
         if (usersSnap.exists()) {
             usersSnap.forEach(u => {
@@ -188,8 +223,7 @@ async function iniciarWhatsApp() {
 
     // SISTEMA DE MENSAJES RECIBIDOS EN WHATSAPP
     waSock.ev.on('messages.upsert', async m => {
-        // FILTRO ANTI-SPAM PARA BAILEYS: Ignorar confirmaciones de lectura y actualizaciones de estado
-        if (m.type !== 'notify') return;
+        if (m.type !== 'notify') return; // Filtro anti-spam de Baileys
 
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
@@ -357,7 +391,6 @@ async function processWaQueue() {
     isProcessingWaQueue = true;
 
     while (waQueue.length > 0) {
-        // Se extrae también imageUrl de la cola
         const { numero, mensaje, delayAfter, imageUrl } = waQueue.shift();
         
         if (waSock && waSock.authState.creds.registered) {
@@ -369,14 +402,12 @@ async function processWaQueue() {
                 
                 await waSock.sendPresenceUpdate('paused', jid);
 
-                // Si hay URL de imagen, Baileys la descarga automáticamente y la envía como foto
                 if (imageUrl) {
                     await waSock.sendMessage(jid, { 
                         image: { url: imageUrl }, 
                         caption: mensaje 
                     });
                 } else {
-                    // Envío estándar de solo texto
                     await waSock.sendMessage(jid, { text: mensaje });
                 }
 
@@ -392,7 +423,6 @@ async function processWaQueue() {
     isProcessingWaQueue = false;
 }
 
-// Actualizada para recibir el parámetro imageUrl opcional
 function enviarMensajeWA(numero, mensaje, isMasivo = false, imageUrl = null) {
     const delay = isMasivo ? 60000 : 3000;
     waQueue.push({ numero, mensaje, delayAfter: delay, imageUrl });
@@ -415,7 +445,7 @@ function adaptarProductoLegacy(p) {
 }
 
 // ==========================================
-// PANEL DE ADMINISTRACION TELEGRAM (REDUCIDO A SOLO VINCULACION)
+// PANEL DE ADMINISTRACION TELEGRAM 
 // ==========================================
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
