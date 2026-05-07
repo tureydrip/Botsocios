@@ -30,16 +30,22 @@ const userStates = {};
 
 // ==========================================
 // SISTEMA DE NOTIFICACIONES (FIREBASE -> WHATSAPP)
+// (Ubicado fuera de la reconexión de Baileys para evitar bucles de spam)
 // ==========================================
 
 // 1. OYENTE DE RECARGAS DE SALDO (Avisa a los Admins)
 const pendingRef = ref(db, 'pending_receipts');
 let isInitialLoadRecargas = true;
+
 onValue(pendingRef, () => { isInitialLoadRecargas = false; }, { onlyOnce: true });
+
 onChildAdded(pendingRef, async (snapshot) => {
     if (isInitialLoadRecargas) return; 
+
     const receiptId = snapshot.key;
     const data = snapshot.val();
+    
+    // Filtro estricto: solo notifica si no está marcado como notificado
     if (data && !data.notified) {
         const shortId = receiptId.slice(-6).toUpperCase();
         const msgWaAdmin = `🔔 *NUEVA RECARGA PENDIENTE*\n\n` +
@@ -51,21 +57,35 @@ onChildAdded(pendingRef, async (snapshot) => {
                          `👉 _Ingrese a su panel web de LUCK XIT OFC para revisar y validar este pago._`;
         
         const imageUrl = data.receiptUrl && data.receiptUrl.startsWith('http') ? data.receiptUrl : null;
-        ADMIN_WA_NUMBERS.forEach(adminNumber => { enviarMensajeWA(adminNumber, msgWaAdmin, false, imageUrl); });
-        try { await update(ref(db, `pending_receipts/${receiptId}`), { notified: true }); } catch (error) {}
+
+        ADMIN_WA_NUMBERS.forEach(adminNumber => {
+            enviarMensajeWA(adminNumber, msgWaAdmin, false, imageUrl);
+        });
+
+        try {
+            await update(ref(db, `pending_receipts/${receiptId}`), { notified: true });
+        } catch (error) {
+            console.error('Error marcando recibo como notificado:', error.message);
+        }
     }
 });
 
-// 2. OYENTE DE COMPRAS WEB (CLAN LEVEL UP)
+// 2. OYENTE DE COMPRAS WEB (CLAN LEVEL UP) - ¡RESTAURADO!
 const clanOrdersRef = ref(db, 'clan_level_up_orders');
 let isInitialClanLoad = true;
+
 onValue(clanOrdersRef, () => { isInitialClanLoad = false; }, { onlyOnce: true });
+
 onChildAdded(clanOrdersRef, async (snapshot) => {
     if (isInitialClanLoad) return; 
+
     const orderId = snapshot.key;
     const orderData = snapshot.val();
+
     if (orderData && orderData.status === 'Pendiente' && !orderData.processed) {
+        console.log(`[LEVEL UP] Nueva orden web detectada: ${orderId} de ${orderData.username}`);
         const shortId = orderId.slice(-6).toUpperCase();
+
         const adminMsg = `🚨 *NOTIFICACIÓN WEB: COMPRA LEVEL UP* 🚨\n\n` +
                          `*🆔 Pedido:* #${shortId}\n` +
                          `*👤 Cliente:* ${orderData.username}\n` +
@@ -74,26 +94,49 @@ onChildAdded(clanOrdersRef, async (snapshot) => {
                          `🛒 *Producto:* ${orderData.product}\n` +
                          `💰 *Pago:* $${parseFloat(orderData.price).toFixed(2)} USD (Descontado de la Web)\n\n` +
                          `🛠️ _Acción requerida: Contactar al usuario e iniciar servicio de 4 bots (8h)._`;
-        ADMIN_WA_NUMBERS.forEach(adminNum => { enviarMensajeWA(adminNum, adminMsg, false, null); });
+
+        ADMIN_WA_NUMBERS.forEach(adminNum => {
+            enviarMensajeWA(adminNum, adminMsg, false, null); 
+        });
+
         if (orderData.waNumber && orderData.waNumber !== 'No vinculado' && orderData.waNumber.length > 5) {
-            const userMsg = `✅ *LUCK XIT OFC - CONFIRMACIÓN DE COMPRA*\n\nHola ${orderData.username}, hemos recibido tu orden de "${orderData.product}".\n\nUn administrador se pondrá en contacto contigo en breve vía WhatsApp para coordinar el servicio.`;
+            const userMsg = `✅ *LUCK XIT OFC - CONFIRMACIÓN DE COMPRA*\n\n` +
+                            `Hola ${orderData.username}, hemos recibido tu orden de "${orderData.product}".\n\nUn administrador se pondrá en contacto contigo en breve vía WhatsApp para coordinar el servicio.\n\n¡Gracias por tu preferencia!`;
             enviarMensajeWA(orderData.waNumber, userMsg, false, null);
         }
-        try { await update(ref(db, `clan_level_up_orders/${orderId}`), { processed: true, status: 'Notificado a Admins' }); } catch (e) {}
+
+        try {
+            await update(ref(db, `clan_level_up_orders/${orderId}`), { processed: true, status: 'Notificado a Admins' });
+        } catch (e) {
+            console.error(`[LEVEL UP] Error marcando orden ${orderId} como procesada:`, e.message);
+        }
     }
 });
 
-// 3. OYENTE DE MENSAJES INDIVIDUALES DESDE LA WEB
+// 3. OYENTE DE MENSAJES INDIVIDUALES DESDE LA WEB (Aprobaciones / Rechazos de Recargas)
 const messagesRef = ref(db, 'whatsapp_control/messages');
 let isInitialLoadMessages = true;
+
 onValue(messagesRef, () => { isInitialLoadMessages = false; }, { onlyOnce: true });
+
 onChildAdded(messagesRef, async (snapshot) => {
     if (isInitialLoadMessages) return;
+
     const msgId = snapshot.key;
     const msgData = snapshot.val();
+
     if (msgData && msgData.number && msgData.message) {
+        console.log(`[LUCK XIT OFC] Enviando notificación web al cliente: ${msgData.number}`);
+        
+        // Enviamos el mensaje al usuario (usando el anti-ban)
         enviarMensajeWA(msgData.number, msgData.message, false);
-        try { await set(ref(db, `whatsapp_control/messages/${msgId}`), null); } catch (error) {}
+
+        // Borramos el mensaje de Firebase para no enviarlo repetidas veces
+        try {
+            await set(ref(db, `whatsapp_control/messages/${msgId}`), null);
+        } catch (error) {
+            console.error('Error eliminando mensaje individual de la cola:', error.message);
+        }
     }
 });
 
@@ -102,17 +145,20 @@ onChildAdded(messagesRef, async (snapshot) => {
 // ==========================================
 const ffSalesRef = ref(db, 'ff_account_sales');
 let isInitialLoadFF = true;
+
 onValue(ffSalesRef, () => { isInitialLoadFF = false; }, { onlyOnce: true });
+
 onChildAdded(ffSalesRef, async (snapshot) => {
     if (isInitialLoadFF) return;
 
     const saleId = snapshot.key;
     const data = snapshot.val();
 
+    // Filtro estricto: solo procesar si no ha sido notificado
     if (data && !data.notified) {
         console.log(`[LUCK XIT OFC] Nueva cuenta FF a la venta detectada en Firebase.`);
         
-        const ADMIN_FF = '573142369516'; // Solo a este Admin
+        const ADMIN_FF = '573142369516'; // Admin asignado a las cuentas
 
         const adminMsg = `🎮 *NUEVA OFERTA: VENTA DE CUENTA FF* 🎮\n\n` +
                          `*👤 Vendedor:* ${data.username}\n` +
@@ -125,20 +171,22 @@ onChildAdded(ffSalesRef, async (snapshot) => {
                          `*📱 Contacto Directo:* wa.me/${data.userWa}\n\n` +
                          `_La imagen de la cuenta fue enviada en este mensaje._`;
 
-        // 1. Enviar los datos con foto a tu WhatsApp
+        // 1. Enviar datos al admin de WhatsApp usando la función antiban
         const imageUrl = data.imageUrl && data.imageUrl.startsWith('http') ? data.imageUrl : null;
         enviarMensajeWA(ADMIN_FF, adminMsg, false, imageUrl);
 
-        // 2. Enviar mensaje de confirmación al WhatsApp del usuario automáticamente
+        // 2. Enviar confirmación al WhatsApp del usuario
         if (data.userWa && data.userWa.length > 5) {
-            const userMsg = `✅ *LUCK XIT OFC - VENTA DE CUENTA*\n\nHola ${data.username}, tu información y captura de la cuenta han sido recibidas exitosamente.\n\nEl administrador ya está revisando tu cuenta y se pondrá en contacto por este chat en la brevedad posible. ¡Gracias por confiar en nosotros!`;
+            const userMsg = `✅ *LUCK XIT OFC - RECEPCIÓN DE CUENTA*\n\nHola ${data.username}, tu información y la captura de la cuenta han sido recibidas exitosamente desde la página web.\n\nEl administrador ya está revisando tu caso y se pondrá en contacto por este chat en la brevedad posible. ¡Gracias por usar nuestro mercado!`;
             enviarMensajeWA(data.userWa, userMsg, false, null);
         }
 
-        // 3. Marcar como notificada en la base de datos para no repetirlo
+        // 3. Marcar como notificada en la BD para evitar doble envío
         try {
             await update(ref(db, `ff_account_sales/${saleId}`), { notified: true });
-        } catch (error) { console.error('Error marcando venta de cuenta FF:', error.message); }
+        } catch (error) {
+            console.error('Error marcando venta de cuenta FF como notificada:', error.message);
+        }
     }
 });
 
@@ -155,10 +203,15 @@ onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
                 await set(ref(db, 'whatsapp_control/code'), { code: 'EL BOT YA ESTA VINCULADO', timestamp: Date.now() });
                 return;
             }
+            
+            console.log(`[LUCK XIT OFC] Solicitando codigo WA para la web: ${cmd.number}`);
             const code = await waSock.requestPairingCode(cmd.number);
+            
             await set(ref(db, 'whatsapp_control/code'), { code: code, timestamp: Date.now() });
             await set(ref(db, 'whatsapp_control/command'), null);
+            
         } catch (error) {
+            console.error('Error generando codigo WA:', error.message);
             await set(ref(db, 'whatsapp_control/code'), { code: 'ERROR: ' + error.message, timestamp: Date.now() });
         }
     }
@@ -167,11 +220,15 @@ onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
 onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
     const data = snapshot.val();
     if (data && data.message) {
+        console.log('[LUCK XIT OFC] Procesando Mensaje Global...');
         const usersSnap = await get(ref(db, 'users'));
         if (usersSnap.exists()) {
             usersSnap.forEach(u => {
                 const user = u.val();
-                if (user.waNumber) enviarMensajeWA(user.waNumber, `📢 *COMUNICADO OFICIAL*\n\n${data.message}`, true);
+                // Notifica a los que vincularon su bot o guardaron su número
+                if (user.waNumber) {
+                    enviarMensajeWA(user.waNumber, `📢 *COMUNICADO OFICIAL*\n\n${data.message}`, true);
+                }
             });
         }
         await set(ref(db, 'whatsapp_control/broadcast'), null);
@@ -185,10 +242,19 @@ const sessionDir = './auth_info_baileys';
 const credsPath = path.join(sessionDir, 'creds.json');
 
 async function restaurarSesionFirebase() {
-    if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+    if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir, { recursive: true });
+    }
+    
     if (!fs.existsSync(credsPath)) {
+        console.log('[LUCK XIT OFC] Verificando respaldo de sesion en Firebase...');
         const snap = await get(ref(db, 'whatsapp_control/backup_session'));
-        if (snap.exists()) fs.writeFileSync(credsPath, JSON.stringify(snap.val()));
+        if (snap.exists()) {
+            fs.writeFileSync(credsPath, JSON.stringify(snap.val()));
+            console.log('[LUCK XIT OFC] Sesion restaurada desde Firebase exitosamente.');
+        } else {
+            console.log('[LUCK XIT OFC] No se encontro respaldo. Se requerira vinculacion.');
+        }
     }
 }
 
@@ -197,6 +263,7 @@ async function restaurarSesionFirebase() {
 // ==========================================
 async function iniciarWhatsApp() {
     await restaurarSesionFirebase();
+
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     const { version } = await fetchLatestBaileysVersion();
 
@@ -215,7 +282,9 @@ async function iniciarWhatsApp() {
                 const rawData = fs.readFileSync(credsPath, 'utf8');
                 const credsObj = JSON.parse(rawData);
                 await set(ref(db, 'whatsapp_control/backup_session'), credsObj);
-            } catch(e) {}
+            } catch(e) {
+                console.error('[LUCK XIT OFC] Error respaldando sesion en Firebase:', e.message);
+            }
         }
     });
 
@@ -223,6 +292,7 @@ async function iniciarWhatsApp() {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('WhatsApp: Conexion cerrada, reconectando...', shouldReconnect);
             if (shouldReconnect) iniciarWhatsApp();
         } else if (connection === 'open') {
             console.log('WhatsApp: Conectado exitosamente y blindado. - LUCK XIT OFC');
@@ -231,7 +301,8 @@ async function iniciarWhatsApp() {
 
     // SISTEMA DE MENSAJES RECIBIDOS EN WHATSAPP
     waSock.ev.on('messages.upsert', async m => {
-        if (m.type !== 'notify') return; 
+        if (m.type !== 'notify') return; // Filtro anti-spam de Baileys
+
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
 
@@ -240,6 +311,9 @@ async function iniciarWhatsApp() {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
 
+        // ==========================================
+        // FLUJO NORMAL DE USUARIOS (.shop)
+        // ==========================================
         const uSnap = await get(ref(db, 'users'));
         let webUid = null, webUser = null;
         if (uSnap.exists()) {
@@ -277,7 +351,9 @@ async function iniciarWhatsApp() {
             
             if (state.step === 'SHOP_SELECT_PROD') {
                 const idx = parseInt(t) - 1;
-                if (isNaN(idx) || idx < 0 || idx >= state.pList.length) return enviarMensajeWA(numero, `❌ *Opción inválida.* Responda con un número del 1 al ${state.pList.length}.`);
+                if (isNaN(idx) || idx < 0 || idx >= state.pList.length) {
+                    return enviarMensajeWA(numero, `❌ *Opción inválida.* Responda con un número del 1 al ${state.pList.length}.`);
+                }
                 
                 const prod = state.pList[idx];
                 let dText = `📦 *PAQUETE:* ${prod.name}\n\n⏱️ Seleccione la *duración* deseada respondiendo con su NÚMERO:\n\n`;
@@ -305,10 +381,21 @@ async function iniciarWhatsApp() {
 
             if (state.step === 'SHOP_SELECT_DUR') {
                 const idx = parseInt(t) - 1;
-                if (isNaN(idx) || idx < 0 || idx >= state.dList.length) return enviarMensajeWA(numero, `❌ *Opción inválida.*`);
+                if (isNaN(idx) || idx < 0 || idx >= state.dList.length) {
+                    return enviarMensajeWA(numero, `❌ *Opción inválida.* Por favor, ingrese un número válido.`);
+                }
                 const dur = state.dList[idx];
+
                 waUserStates[numero] = { step: 'SHOP_CONFIRM', prodId: state.prodId, durId: dur.dId, durInfo: dur, prodName: state.prodName };
-                const confirmMsg = `🧾 *CONFIRMACIÓN DE COMPRA*\n\n*🎮 Producto:* ${state.prodName}\n*⏳ Duración:* ${dur.duration}\n*💵 Precio:* $${dur.price} USD\n*💳 Su Saldo:* $${parseFloat(webUser.balance || 0).toFixed(2)} USD\n\n✅ Escriba *COMPRAR* para procesar la transacción.\n❌ Escriba *CANCELAR* para anular.`;
+                
+                const confirmMsg = `🧾 *CONFIRMACIÓN DE COMPRA*\n\n` +
+                                 `*🎮 Producto:* ${state.prodName}\n` +
+                                 `*⏳ Duración:* ${dur.duration}\n` +
+                                 `*💵 Precio:* $${dur.price} USD\n` +
+                                 `*💳 Su Saldo:* $${parseFloat(webUser.balance || 0).toFixed(2)} USD\n\n` +
+                                 `✅ Escriba *COMPRAR* para procesar la transacción.\n` +
+                                 `❌ Escriba *CANCELAR* para anular.`;
+                                 
                 return enviarMensajeWA(numero, confirmMsg);
             }
 
@@ -338,21 +425,30 @@ async function iniciarWhatsApp() {
                     if (realDur && realDur.keys && Object.keys(realDur.keys).length > 0) {
                         const kId = Object.keys(realDur.keys)[0];
                         const kD = realDur.keys[kId];
+
                         let kP = `products/${prodId}/durations/${durId}/keys/${kId}`;
                         if (durId === 'legacy_var') kP = `products/${prodId}/keys/${kId}`;
 
                         const historyKey = push(ref(db)).key;
                         const shortOrderId = historyKey.slice(-6).toUpperCase();
+
                         const u = { [kP]: null, [`users/${webUid}/balance`]: cB - fPrice };
                         u[`users/${webUid}/history/${historyKey}`] = { product: `${prodName} - ${durInfo.duration}`, key: kD, price: fPrice, date: Date.now(), refunded: false, warrantyHours: durInfo.warranty || 0 };
 
                         await update(ref(db), u);
-                        const successMsg = `🎉 *¡COMPRA EXITOSA!* 🎉\n\n*🆔 Pedido:* #${shortOrderId}\n*🎮 Producto:* ${prodName}\n*⏳ Duración:* ${durInfo.duration}\n\n🔑 *SU KEY / CÓDIGO:*\n\`\`\`${kD}\`\`\`\n\n✨ _Gracias por su preferencia._`;
+                        
+                        const successMsg = `🎉 *¡COMPRA EXITOSA!* 🎉\n\n` +
+                                         `*🆔 Pedido:* #${shortOrderId}\n` +
+                                         `*🎮 Producto:* ${prodName}\n` +
+                                         `*⏳ Duración:* ${durInfo.duration}\n\n` +
+                                         `🔑 *SU KEY / CÓDIGO:*\n\`\`\`${kD}\`\`\`\n\n` +
+                                         `✨ _Gracias por su preferencia. - LUCK XIT OFC_`;
+                                         
                         enviarMensajeWA(numero, successMsg);
                         waUserStates[numero] = null;
                     } else {
                         waUserStates[numero] = null;
-                        enviarMensajeWA(numero, `⚠️ _Lamentablemente el producto se agotó en este momento._`);
+                        enviarMensajeWA(numero, `⚠️ _Lamentablemente el producto se agotó en este momento. Intente de nuevo más tarde._`);
                     }
                     return;
                 }
@@ -381,16 +477,26 @@ async function processWaQueue() {
                 await waSock.sendPresenceUpdate('composing', jid);
                 const typingMs = Math.min(Math.max(mensaje.length * 20, 1500), 4000);
                 await new Promise(resolve => setTimeout(resolve, typingMs));
+                
                 await waSock.sendPresenceUpdate('paused', jid);
 
                 if (imageUrl) {
-                    await waSock.sendMessage(jid, { image: { url: imageUrl }, caption: mensaje });
+                    await waSock.sendMessage(jid, { 
+                        image: { url: imageUrl }, 
+                        caption: mensaje 
+                    });
                 } else {
                     await waSock.sendMessage(jid, { text: mensaje });
                 }
-            } catch (error) { console.error('Error enviando mensaje WA a', numero, error.message); }
+
+            } catch (error) {
+                console.error('Error enviando mensaje WA a', numero, error.message);
+            }
         }
-        if (waQueue.length > 0) await new Promise(resolve => setTimeout(resolve, delayAfter));
+
+        if (waQueue.length > 0) {
+            await new Promise(resolve => setTimeout(resolve, delayAfter));
+        }
     }
     isProcessingWaQueue = false;
 }
@@ -403,58 +509,121 @@ function enviarMensajeWA(numero, mensaje, isMasivo = false, imageUrl = null) {
 
 function adaptarProductoLegacy(p) {
     if (p && !p.durations && p.price !== undefined) {
-        p.durations = { 'legacy_var': { duration: p.duration || 'Unica / Estandar', price: p.price, warranty: p.warranty || 0, keys: p.keys || {} } };
+        p.durations = {
+            'legacy_var': {
+                duration: p.duration || 'Unica / Estandar',
+                price: p.price,
+                warranty: p.warranty || 0,
+                keys: p.keys || {}
+            }
+        };
         p.category = p.category || 'Android'; 
     }
     return p;
 }
 
-// PANEL DE ADMIN TELEGRAM
+// ==========================================
+// PANEL DE ADMINISTRACION TELEGRAM 
+// ==========================================
 bot.onText(/\/start/, async (msg) => {
-    if (msg.from.id !== SUPER_ADMIN_ID) return;
-    bot.sendMessage(msg.chat.id, 'Panel de Control - LUCK XIT OFC', { reply_markup: { inline_keyboard: [[{ text: '[ Vincular WhatsApp ]', callback_data: 'walinkadmin_menu' }]] } });
+    const chatId = msg.chat.id;
+    const tgId = msg.from.id;
+
+    if (tgId !== SUPER_ADMIN_ID) return;
+
+    userStates[chatId] = null; 
+
+    const kb = {
+        inline_keyboard: [
+            [{ text: '[ Vincular WhatsApp por Telegram ]', callback_data: 'walinkadmin_menu' }]
+        ]
+    };
+
+    bot.sendMessage(chatId, 'Panel de Control Opcional - LUCK XIT OFC\n\n(Las notificaciones de pago ahora te llegaran directo al WhatsApp)', { reply_markup: kb });
 });
 
 bot.on('callback_query', async (query) => {
-    bot.answerCallbackQuery(query.id);
-    if (query.from.id !== SUPER_ADMIN_ID) return;
     const chatId = query.message.chat.id;
-    if (query.data === 'walinkadmin_menu') {
-        return bot.editMessageText('VINCULAR BOT A WHATSAPP\n\nSeleccione el pais:', {chat_id: chatId, message_id: query.message.message_id, reply_markup: {inline_keyboard: [[{text: 'Colombia (+57)', callback_data: 'walinkadmin|57'}, {text: 'Mexico (+52)', callback_data: 'walinkadmin|52'}], [{text: 'Otro Pais', callback_data: 'walinkadmin|otro'}]]}});
+    const tgId = query.from.id;
+    const data = query.data;
+
+    bot.answerCallbackQuery(query.id);
+
+    if (tgId !== SUPER_ADMIN_ID) return;
+
+    if (data === 'walinkadmin_menu') {
+        const kb = {
+            inline_keyboard: [
+                [{text: 'Colombia (+57)', callback_data: 'walinkadmin|57'}, {text: 'Mexico (+52)', callback_data: 'walinkadmin|52'}],
+                [{text: 'Otro Pais (Escribir codigo)', callback_data: 'walinkadmin|otro'}]
+            ]
+        };
+        return bot.editMessageText('VINCULAR BOT A WHATSAPP\n\nSeleccione el pais del numero destino que alojara el bot:', {chat_id: chatId, message_id: query.message.message_id, reply_markup: kb});
     }
-    if (query.data.startsWith('walinkadmin|')) {
-        const codPais = query.data.split('|')[1];
+
+    if (data.startsWith('walinkadmin|')) {
+        const codPais = data.split('|')[1];
         if (codPais === 'otro') {
             userStates[chatId] = { step: 'ADMIN_WA_CUSTOM_COUNTRY', data: {} };
-            return bot.editMessageText('Escriba el Codigo de Pais:', {chat_id: chatId, message_id: query.message.message_id});
+            return bot.editMessageText('Escriba el Codigo de Pais del Bot (solo numeros):', {chat_id: chatId, message_id: query.message.message_id});
         } else {
             userStates[chatId] = { step: 'ADMIN_WA_NUMBER', data: { countryCode: codPais } };
-            return bot.editMessageText(`Escriba el numero sin codigo de pais:`, {chat_id: chatId, message_id: query.message.message_id});
+            return bot.editMessageText(`Pais seleccionado (+${codPais}).\n\nEscriba el numero del Bot de WhatsApp (sin el codigo de pais):`, {chat_id: chatId, message_id: query.message.message_id});
         }
     }
 });
 
 bot.on('message', async (msg) => {
-    if (msg.from.id !== SUPER_ADMIN_ID || !msg.text || msg.text.startsWith('/start')) return;
+    if (msg.text && msg.text.startsWith('/start')) return;
+
     const chatId = msg.chat.id;
+    const tgId = msg.from.id;
+    const text = msg.text || '';
+
+    if (tgId !== SUPER_ADMIN_ID) return;
+    if (!text) return;
+
     if (userStates[chatId]) {
-        if (userStates[chatId].step === 'ADMIN_WA_CUSTOM_COUNTRY') {
-            userStates[chatId].data.countryCode = msg.text.replace('+', '').trim();
-            userStates[chatId].step = 'ADMIN_WA_NUMBER';
-            return bot.sendMessage(chatId, `Escriba el numero:`);
+        const state = userStates[chatId];
+
+        if (state.step === 'ADMIN_WA_CUSTOM_COUNTRY') {
+            const code = text.replace('+', '').trim();
+            if (isNaN(code)) return bot.sendMessage(chatId, 'Error: Escriba solo numeros (Ej: 51)');
+            state.data.countryCode = code;
+            state.step = 'ADMIN_WA_NUMBER';
+            return bot.sendMessage(chatId, `Codigo +${code} guardado.\n\nEscriba el numero que se convertira en el Bot de WhatsApp sin el codigo de pais:`);
         }
-        if (userStates[chatId].step === 'ADMIN_WA_NUMBER') {
-            const fullNumber = `${userStates[chatId].data.countryCode}${msg.text.trim()}`;
-            bot.sendMessage(chatId, `Solicitando Codigo...`);
-            setTimeout(async () => {
-                try {
-                    const code = await waSock.requestPairingCode(fullNumber);
-                    bot.sendMessage(chatId, `Codigo de vinculacion:\n\n\`${code}\``, { parse_mode: 'Markdown' });
-                } catch(err) { bot.sendMessage(chatId, 'Error: ' + err.message); }
-            }, 3000);
+
+        if (state.step === 'ADMIN_WA_NUMBER') {
+            const num = text.trim();
+            if (isNaN(num)) return bot.sendMessage(chatId, 'Error: Escriba solo numeros.');
+            const fullNumber = `${state.data.countryCode}${num}`;
+
+            bot.sendMessage(chatId, `Solicitando Codigo a WhatsApp para el numero +${fullNumber}... Por favor espere.`);
+
+            try {
+                if (waSock && waSock.authState.creds.registered) {
+                    userStates[chatId] = null;
+                    return bot.sendMessage(chatId, 'El bot de WhatsApp ya se encuentra registrado y vinculado con un numero. Cierre sesion primero desde WhatsApp si desea cambiarlo.');
+                }
+                setTimeout(async () => {
+                    try {
+                        const code = await waSock.requestPairingCode(fullNumber);
+                        bot.sendMessage(chatId, `Codigo de vinculacion para WhatsApp:\n\n\`${code}\`\n\nIngrese este codigo en "Dispositivos Vinculados" > "Vincular con el numero de telefono" en su WhatsApp destino.`, { parse_mode: 'Markdown' });
+                    } catch(err) {
+                        bot.sendMessage(chatId, 'Error al solicitar codigo: ' + err.message);
+                    }
+                }, 3000);
+            } catch (error) {
+                bot.sendMessage(chatId, 'Error al solicitar codigo: ' + error.message);
+            }
             userStates[chatId] = null;
+            return;
         }
     }
 });
+
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+console.log('Terminal de LUCK XIT OFC En linea y a la espera de peticiones...');
