@@ -30,7 +30,6 @@ const userStates = {};
 
 // ==========================================
 // SISTEMA DE NOTIFICACIONES (FIREBASE -> WHATSAPP)
-// (Ubicado fuera de la reconexión de Baileys para evitar bucles de spam)
 // ==========================================
 
 // 1. OYENTE DE RECARGAS DE SALDO (Avisa a los Admins)
@@ -70,7 +69,7 @@ onChildAdded(pendingRef, async (snapshot) => {
     }
 });
 
-// 2. OYENTE DE COMPRAS WEB (CLAN LEVEL UP) - ¡RESTAURADO!
+// 2. OYENTE DE COMPRAS WEB (CLAN LEVEL UP)
 const clanOrdersRef = ref(db, 'clan_level_up_orders');
 let isInitialClanLoad = true;
 
@@ -113,7 +112,7 @@ onChildAdded(clanOrdersRef, async (snapshot) => {
     }
 });
 
-// 3. OYENTE DE MENSAJES INDIVIDUALES DESDE LA WEB (Aprobaciones / Rechazos de Recargas)
+// 3. OYENTE DE MENSAJES INDIVIDUALES DESDE LA WEB
 const messagesRef = ref(db, 'whatsapp_control/messages');
 let isInitialLoadMessages = true;
 
@@ -128,10 +127,8 @@ onChildAdded(messagesRef, async (snapshot) => {
     if (msgData && msgData.number && msgData.message) {
         console.log(`[LUCK XIT OFC] Enviando notificación web al cliente: ${msgData.number}`);
         
-        // Enviamos el mensaje al usuario (usando el anti-ban)
         enviarMensajeWA(msgData.number, msgData.message, false);
 
-        // Borramos el mensaje de Firebase para no enviarlo repetidas veces
         try {
             await set(ref(db, `whatsapp_control/messages/${msgId}`), null);
         } catch (error) {
@@ -175,7 +172,6 @@ onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
         if (usersSnap.exists()) {
             usersSnap.forEach(u => {
                 const user = u.val();
-                // Notifica a los que vincularon su bot o guardaron su número
                 if (user.waNumber) {
                     enviarMensajeWA(user.waNumber, `📢 *COMUNICADO OFICIAL*\n\n${data.message}`, true);
                 }
@@ -258,8 +254,67 @@ async function iniciarWhatsApp() {
 
         const sender = msg.key.remoteJid;
         const numero = sender.split('@')[0];
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        
+        // Extraer imagen y texto del mensaje (Soporta imágenes con caption)
+        const imageMessage = msg.message.imageMessage;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || '';
         const t = text.trim().toLowerCase();
+
+        // =========================================================
+        // NUEVO: SISTEMA DE RECEPCIÓN DE CUENTAS FF (SOLO ADMIN)
+        // =========================================================
+        const ADMIN_FF = '573142369516'; // Admin exclusivo asignado para ventas
+        
+        // 1. Detectar el inicio de la venta de cuenta
+        if (t.includes('nuevo ingreso: venta de cuenta ff')) {
+            const adminJid = `${ADMIN_FF}@s.whatsapp.net`;
+
+            if (imageMessage) {
+                // Si el usuario mandó la info Y la foto todo junto en el mismo mensaje
+                try {
+                    await waSock.sendMessage(adminJid, { forward: msg });
+                    enviarMensajeWA(ADMIN_FF, `🎮 *NUEVA VENTA DE CUENTA FF* 🎮\n\nRemitente: wa.me/${numero}\n(Enviado con foto adjunta)`, false);
+                    enviarMensajeWA(numero, `✅ *¡Cuenta y Captura recibidas!*\n\nTodo ha sido enviado al Administrador para su revisión. Pronto nos comunicaremos contigo. - LUCK XIT OFC`, false);
+                } catch (err) { console.error("Error reenviando imagen de FF:", err); }
+            } else {
+                // Si el usuario solo mandó el texto y falta la foto
+                const msgText = `🎮 *ALERTA: NUEVA VENTA DE CUENTA FF* 🎮\n\nRemitente: wa.me/${numero}\n\n${text}\n\n_Esperando que el usuario envíe la foto..._`;
+                enviarMensajeWA(ADMIN_FF, msgText, false);
+                
+                // Guardamos el estado del usuario para interceptar la próxima foto que envíe
+                waUserStates[numero] = { step: 'AWAITING_FF_IMAGE' };
+                enviarMensajeWA(numero, `✅ *Información recibida.*\n\nPor favor, *ENVÍA AHORA LA CAPTURA DE PANTALLA* (foto del perfil) de la cuenta en este chat para completar el proceso y enviarla al administrador.`, false);
+            }
+            return; // Cortar el flujo aquí para que no interfiera con otros comandos
+        }
+
+        // 2. Interceptar la imagen si el usuario estaba en estado de espera
+        if (waUserStates[numero] && waUserStates[numero].step === 'AWAITING_FF_IMAGE') {
+            if (imageMessage) {
+                const adminJid = `${ADMIN_FF}@s.whatsapp.net`;
+                
+                try {
+                    // Reenviamos la foto pura al admin
+                    await waSock.sendMessage(adminJid, { forward: msg });
+                    enviarMensajeWA(ADMIN_FF, `📸 *Foto de la cuenta FF recibida* del usuario wa.me/${numero} (Adjunta arriba)`, false);
+                } catch (err) { console.error("Error reenviando imagen:", err); }
+
+                // Confirmar al usuario y limpiar el estado
+                waUserStates[numero] = null;
+                enviarMensajeWA(numero, `✅ *¡Captura recibida con éxito!*\n\nTodo el paquete ha sido enviado al Administrador. Él revisará la cuenta y se comunicará contigo lo más pronto posible. Gracias por confiar en LUCK XIT OFC.`, false);
+                return;
+            } else {
+                 // Si mandó otro texto en vez de imagen
+                 if (t === 'cancelar') {
+                     waUserStates[numero] = null;
+                     enviarMensajeWA(numero, `🚫 _Solicitud de venta de cuenta cancelada._`, false);
+                     return;
+                 }
+                 enviarMensajeWA(numero, `⚠️ *Falta la captura.*\n\nPor favor, adjunta una *IMAGEN* (captura de pantalla) de la cuenta. Si deseas cancelar el proceso, escribe *CANCELAR*.`, false);
+                 return;
+            }
+        }
+        // =========================================================
 
         // ==========================================
         // FLUJO NORMAL DE USUARIOS (.shop)
