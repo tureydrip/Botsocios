@@ -33,7 +33,7 @@ const userStates = {};
 // (Ubicado fuera de la reconexión de Baileys para evitar bucles de spam)
 // ==========================================
 
-// 1. OYENTE DE RECARGAS DE SALDO
+// 1. OYENTE DE RECARGAS DE SALDO (Avisa a los Admins)
 const pendingRef = ref(db, 'pending_receipts');
 let isInitialLoadRecargas = true;
 
@@ -113,6 +113,33 @@ onChildAdded(clanOrdersRef, async (snapshot) => {
     }
 });
 
+// 3. OYENTE DE MENSAJES INDIVIDUALES DESDE LA WEB (Aprobaciones / Rechazos de Recargas)
+const messagesRef = ref(db, 'whatsapp_control/messages');
+let isInitialLoadMessages = true;
+
+onValue(messagesRef, () => { isInitialLoadMessages = false; }, { onlyOnce: true });
+
+onChildAdded(messagesRef, async (snapshot) => {
+    if (isInitialLoadMessages) return;
+
+    const msgId = snapshot.key;
+    const msgData = snapshot.val();
+
+    if (msgData && msgData.number && msgData.message) {
+        console.log(`[LUCK XIT OFC] Enviando notificación web al cliente: ${msgData.number}`);
+        
+        // Enviamos el mensaje al usuario (usando el anti-ban)
+        enviarMensajeWA(msgData.number, msgData.message, false);
+
+        // Borramos el mensaje de Firebase para no enviarlo repetidas veces
+        try {
+            await set(ref(db, `whatsapp_control/messages/${msgId}`), null);
+        } catch (error) {
+            console.error('Error eliminando mensaje individual de la cola:', error.message);
+        }
+    }
+});
+
 // ==========================================
 // SISTEMA DE CONTROL REMOTO DESDE LA WEB
 // ==========================================
@@ -148,7 +175,8 @@ onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
         if (usersSnap.exists()) {
             usersSnap.forEach(u => {
                 const user = u.val();
-                if (user.waLinked && user.waNumber) {
+                // Notifica a los que vincularon su bot o guardaron su número
+                if (user.waNumber) {
                     enviarMensajeWA(user.waNumber, `📢 *COMUNICADO OFICIAL*\n\n${data.message}`, true);
                 }
             });
