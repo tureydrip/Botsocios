@@ -5,6 +5,8 @@ const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion,
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 // CONFIGURACION LUCK XIT OFC
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
@@ -29,8 +31,26 @@ const waUserStates = {};
 const userStates = {};
 
 // ==========================================
+// FUNCION EXTRACTORA DE MEDIAFIRE
+// ==========================================
+async function mediafireDl(url) {
+    try {
+        const res = await axios.get(url);
+        const $ = cheerio.load(res.data);
+        const downloadUrl = $('#downloadButton').attr('href');
+        const name = downloadUrl ? downloadUrl.split('/').pop() : 'archivo';
+        return {
+            title: name,
+            url: downloadUrl
+        };
+    } catch (error) {
+        console.error('Error extrayendo enlace de MediaFire:', error.message);
+        return null;
+    }
+}
+
+// ==========================================
 // SISTEMA DE NOTIFICACIONES (FIREBASE -> WHATSAPP)
-// (Ubicado fuera de la reconexión de Baileys para evitar bucles de spam)
 // ==========================================
 
 // 1. OYENTE DE RECARGAS DE SALDO (Avisa a los Admins)
@@ -70,7 +90,7 @@ onChildAdded(pendingRef, async (snapshot) => {
     }
 });
 
-// 2. OYENTE DE COMPRAS WEB (CLAN LEVEL UP) - ¡RESTAURADO!
+// 2. OYENTE DE COMPRAS WEB (CLAN LEVEL UP)
 const clanOrdersRef = ref(db, 'clan_level_up_orders');
 let isInitialClanLoad = true;
 
@@ -113,7 +133,7 @@ onChildAdded(clanOrdersRef, async (snapshot) => {
     }
 });
 
-// 3. OYENTE DE MENSAJES INDIVIDUALES DESDE LA WEB (Aprobaciones / Rechazos de Recargas)
+// 3. OYENTE DE MENSAJES INDIVIDUALES DESDE LA WEB
 const messagesRef = ref(db, 'whatsapp_control/messages');
 let isInitialLoadMessages = true;
 
@@ -128,10 +148,8 @@ onChildAdded(messagesRef, async (snapshot) => {
     if (msgData && msgData.number && msgData.message) {
         console.log(`[LUCK XIT OFC] Enviando notificación web al cliente: ${msgData.number}`);
         
-        // Enviamos el mensaje al usuario (usando el anti-ban)
         enviarMensajeWA(msgData.number, msgData.message, false);
 
-        // Borramos el mensaje de Firebase para no enviarlo repetidas veces
         try {
             await set(ref(db, `whatsapp_control/messages/${msgId}`), null);
         } catch (error) {
@@ -140,9 +158,7 @@ onChildAdded(messagesRef, async (snapshot) => {
     }
 });
 
-// ==========================================
 // 4. NUEVO: OYENTE DE VENTAS DE CUENTAS FF DESDE LA WEB
-// ==========================================
 const ffSalesRef = ref(db, 'ff_account_sales');
 let isInitialLoadFF = true;
 
@@ -154,11 +170,10 @@ onChildAdded(ffSalesRef, async (snapshot) => {
     const saleId = snapshot.key;
     const data = snapshot.val();
 
-    // Filtro estricto: solo procesar si no ha sido notificado
     if (data && !data.notified) {
         console.log(`[LUCK XIT OFC] Nueva cuenta FF a la venta detectada en Firebase.`);
         
-        const ADMIN_FF = '573142369516'; // Admin asignado a las cuentas
+        const ADMIN_FF = '573142369516';
 
         const adminMsg = `🎮 *NUEVA OFERTA: VENTA DE CUENTA FF* 🎮\n\n` +
                          `*👤 Vendedor:* ${data.username}\n` +
@@ -171,17 +186,14 @@ onChildAdded(ffSalesRef, async (snapshot) => {
                          `*📱 Contacto Directo:* wa.me/${data.userWa}\n\n` +
                          `_La imagen de la cuenta fue enviada en este mensaje._`;
 
-        // 1. Enviar datos al admin de WhatsApp usando la función antiban
         const imageUrl = data.imageUrl && data.imageUrl.startsWith('http') ? data.imageUrl : null;
         enviarMensajeWA(ADMIN_FF, adminMsg, false, imageUrl);
 
-        // 2. Enviar confirmación al WhatsApp del usuario
         if (data.userWa && data.userWa.length > 5) {
             const userMsg = `✅ *LUCK XIT OFC - RECEPCIÓN DE CUENTA*\n\nHola ${data.username}, tu información y la captura de la cuenta han sido recibidas exitosamente desde la página web.\n\nEl administrador ya está revisando tu caso y se pondrá en contacto por este chat en la brevedad posible. ¡Gracias por usar nuestro mercado!`;
             enviarMensajeWA(data.userWa, userMsg, false, null);
         }
 
-        // 3. Marcar como notificada en la BD para evitar doble envío
         try {
             await update(ref(db, `ff_account_sales/${saleId}`), { notified: true });
         } catch (error) {
@@ -225,7 +237,6 @@ onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
         if (usersSnap.exists()) {
             usersSnap.forEach(u => {
                 const user = u.val();
-                // Notifica a los que vincularon su bot o guardaron su número
                 if (user.waNumber) {
                     enviarMensajeWA(user.waNumber, `📢 *COMUNICADO OFICIAL*\n\n${data.message}`, true);
                 }
@@ -301,7 +312,7 @@ async function iniciarWhatsApp() {
 
     // SISTEMA DE MENSAJES RECIBIDOS EN WHATSAPP
     waSock.ev.on('messages.upsert', async m => {
-        if (m.type !== 'notify') return; // Filtro anti-spam de Baileys
+        if (m.type !== 'notify') return; 
 
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
@@ -310,6 +321,38 @@ async function iniciarWhatsApp() {
         const numero = sender.split('@')[0];
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
+
+        // ==========================================
+        // COMANDO MEDIAFIRE (Disponible en Grupos y Privado)
+        // ==========================================
+        if (t.startsWith('.mediafire ')) {
+            const link = text.split(' ')[1];
+            if (!link || !link.includes('mediafire.com')) {
+                await waSock.sendMessage(sender, { text: `❌ *Enlace inválido.* Uso correcto:\n.mediafire https://www.mediafire.com/...` }, { quoted: msg });
+                return;
+            }
+
+            await waSock.sendMessage(sender, { text: `⏳ *Descargando archivo de MediaFire...* Espere un momento.` }, { quoted: msg });
+
+            try {
+                const mfData = await mediafireDl(link);
+                if (!mfData || !mfData.url) {
+                    await waSock.sendMessage(sender, { text: `❌ *Error al obtener el enlace.* El archivo puede ser privado o haber sido eliminado.` }, { quoted: msg });
+                    return;
+                }
+
+                await waSock.sendMessage(sender, {
+                    document: { url: mfData.url },
+                    mimetype: 'application/octet-stream',
+                    fileName: mfData.title,
+                    caption: `✅ *Archivo descargado.*`
+                }, { quoted: msg });
+            } catch (e) {
+                 console.error('Error Mediafire:', e);
+                 await waSock.sendMessage(sender, { text: `❌ *Ocurrió un error al enviar el archivo.* Es posible que pese demasiado.` }, { quoted: msg });
+            }
+            return; // Termina la ejecución aquí para que no interfiera con el resto del bot
+        }
 
         // ==========================================
         // FLUJO NORMAL DE USUARIOS (.shop)
