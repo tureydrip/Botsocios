@@ -72,7 +72,7 @@ onChildAdded(pendingRef, async (snapshot) => {
         
         // NUEVO: Generar token seguro y crear el enlace de aprobación rápida
         const actionToken = crypto.randomBytes(16).toString('hex');
-        const approvalLink = `https://sociosxit.com/admin/revision-rapida?token=${actionToken}`;
+        const approvalLink = `https://sociosxit.com/admin_operaciones.html?token=${actionToken}`;
 
         const msgWaAdmin = `🔔 *NUEVA RECARGA PENDIENTE*\n\n` +
                          `*🆔 Ref:* #${shortId}\n` +
