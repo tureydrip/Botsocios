@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const crypto = require('crypto'); // NUEVO: Importado para generar tokens únicos de seguridad
 
 // CONFIGURACION LUCK XIT OFC
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
@@ -53,7 +54,7 @@ async function mediafireDl(url) {
 // SISTEMA DE NOTIFICACIONES (FIREBASE -> WHATSAPP)
 // ==========================================
 
-// 1. OYENTE DE RECARGAS DE SALDO (Avisa a los Admins)
+// 1. OYENTE DE RECARGAS DE SALDO (Avisa a los Admins) - ACTUALIZADO CON LINK DIRECTO
 const pendingRef = ref(db, 'pending_receipts');
 let isInitialLoadRecargas = true;
 
@@ -68,13 +69,19 @@ onChildAdded(pendingRef, async (snapshot) => {
     // Filtro estricto: solo notifica si no está marcado como notificado
     if (data && !data.notified) {
         const shortId = receiptId.slice(-6).toUpperCase();
+        
+        // NUEVO: Generar token seguro y crear el enlace de aprobación rápida
+        const actionToken = crypto.randomBytes(16).toString('hex');
+        const approvalLink = `https://sociosxit.com/admin/revision-rapida?token=${actionToken}`;
+
         const msgWaAdmin = `🔔 *NUEVA RECARGA PENDIENTE*\n\n` +
                          `*🆔 Ref:* #${shortId}\n` +
                          `*👤 Usuario:* ${data.username}\n` +
                          `*💵 Monto (USD):* $${parseFloat(data.amountUsd || 0).toFixed(2)}\n` +
                          `*🌎 País:* ${data.countryName || 'No especificado'}\n` +
                          `*💰 Monto Local:* ${data.amountLocal || 'No especificado'}\n\n` +
-                         `👉 _Ingrese a su panel web de LUCK XIT OFC para revisar y validar este pago._`;
+                         `⚙️ *Gestionar este pago rápido aquí:*\n` +
+                         `👉 ${approvalLink}`;
         
         const imageUrl = data.receiptUrl && data.receiptUrl.startsWith('http') ? data.receiptUrl : null;
 
@@ -83,7 +90,12 @@ onChildAdded(pendingRef, async (snapshot) => {
         });
 
         try {
-            await update(ref(db, `pending_receipts/${receiptId}`), { notified: true });
+            // NUEVO: Guardamos el token en la base de datos junto con el estado de notificado
+            // para que tu web sociosxit.com pueda validarlo cuando abras el enlace
+            await update(ref(db, `pending_receipts/${receiptId}`), { 
+                notified: true,
+                actionToken: actionToken
+            });
         } catch (error) {
             console.error('Error marcando recibo como notificado:', error.message);
         }
