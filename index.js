@@ -7,13 +7,12 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const crypto = require('crypto'); // NUEVO: Importado para generar tokens únicos de seguridad
+const crypto = require('crypto'); 
 
-// CONFIGURACION LUCK XIT OFC
+// CONFIGURACION L U C K X I T OFC
 const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
-// Lista de administradores para recibir notificaciones (sin el signo +)
 const ADMIN_WA_NUMBERS = ['573142369516', '34642459475']; 
 
 const firebaseConfig = {
@@ -53,8 +52,6 @@ async function mediafireDl(url) {
 // ==========================================
 // SISTEMA DE NOTIFICACIONES (FIREBASE -> WHATSAPP)
 // ==========================================
-
-// 1. OYENTE DE RECARGAS DE SALDO (Avisa a los Admins) - ACTUALIZADO CON LINK DIRECTO
 const pendingRef = ref(db, 'pending_receipts');
 let isInitialLoadRecargas = true;
 
@@ -66,11 +63,8 @@ onChildAdded(pendingRef, async (snapshot) => {
     const receiptId = snapshot.key;
     const data = snapshot.val();
     
-    // Filtro estricto: solo notifica si no está marcado como notificado
     if (data && !data.notified) {
         const shortId = receiptId.slice(-6).toUpperCase();
-        
-        // NUEVO: Generar token seguro y crear el enlace de aprobación rápida
         const actionToken = crypto.randomBytes(16).toString('hex');
         const approvalLink = `https://sociosxit.com/admin_operaciones.html?token=${actionToken}`;
 
@@ -90,8 +84,6 @@ onChildAdded(pendingRef, async (snapshot) => {
         });
 
         try {
-            // NUEVO: Guardamos el token en la base de datos junto con el estado de notificado
-            // para que tu web sociosxit.com pueda validarlo cuando abras el enlace
             await update(ref(db, `pending_receipts/${receiptId}`), { 
                 notified: true,
                 actionToken: actionToken
@@ -102,7 +94,6 @@ onChildAdded(pendingRef, async (snapshot) => {
     }
 });
 
-// 2. OYENTE DE COMPRAS WEB (CLAN LEVEL UP)
 const clanOrdersRef = ref(db, 'clan_level_up_orders');
 let isInitialClanLoad = true;
 
@@ -132,7 +123,7 @@ onChildAdded(clanOrdersRef, async (snapshot) => {
         });
 
         if (orderData.waNumber && orderData.waNumber !== 'No vinculado' && orderData.waNumber.length > 5) {
-            const userMsg = `✅ *LUCK XIT OFC - CONFIRMACIÓN DE COMPRA*\n\n` +
+            const userMsg = `✅ *L U C K X I T OFC - CONFIRMACIÓN DE COMPRA*\n\n` +
                             `Hola ${orderData.username}, hemos recibido tu orden de "${orderData.product}".\n\nUn administrador se pondrá en contacto contigo en breve vía WhatsApp para coordinar el servicio.\n\n¡Gracias por tu preferencia!`;
             enviarMensajeWA(orderData.waNumber, userMsg, false, null);
         }
@@ -145,7 +136,6 @@ onChildAdded(clanOrdersRef, async (snapshot) => {
     }
 });
 
-// 3. OYENTE DE MENSAJES INDIVIDUALES DESDE LA WEB
 const messagesRef = ref(db, 'whatsapp_control/messages');
 let isInitialLoadMessages = true;
 
@@ -158,7 +148,7 @@ onChildAdded(messagesRef, async (snapshot) => {
     const msgData = snapshot.val();
 
     if (msgData && msgData.number && msgData.message) {
-        console.log(`[LUCK XIT OFC] Enviando notificación web al cliente: ${msgData.number}`);
+        console.log(`[L U C K X I T OFC] Enviando notificación web al cliente: ${msgData.number}`);
         
         enviarMensajeWA(msgData.number, msgData.message, false);
 
@@ -170,7 +160,6 @@ onChildAdded(messagesRef, async (snapshot) => {
     }
 });
 
-// 4. NUEVO: OYENTE DE VENTAS DE CUENTAS FF DESDE LA WEB
 const ffSalesRef = ref(db, 'ff_account_sales');
 let isInitialLoadFF = true;
 
@@ -183,7 +172,7 @@ onChildAdded(ffSalesRef, async (snapshot) => {
     const data = snapshot.val();
 
     if (data && !data.notified) {
-        console.log(`[LUCK XIT OFC] Nueva cuenta FF a la venta detectada en Firebase.`);
+        console.log(`[L U C K X I T OFC] Nueva cuenta FF a la venta detectada en Firebase.`);
         
         const ADMIN_FF = '573142369516';
 
@@ -202,7 +191,7 @@ onChildAdded(ffSalesRef, async (snapshot) => {
         enviarMensajeWA(ADMIN_FF, adminMsg, false, imageUrl);
 
         if (data.userWa && data.userWa.length > 5) {
-            const userMsg = `✅ *LUCK XIT OFC - RECEPCIÓN DE CUENTA*\n\nHola ${data.username}, tu información y la captura de la cuenta han sido recibidas exitosamente desde la página web.\n\nEl administrador ya está revisando tu caso y se pondrá en contacto por este chat en la brevedad posible. ¡Gracias por usar nuestro mercado!`;
+            const userMsg = `✅ *L U C K X I T OFC - RECEPCIÓN DE CUENTA*\n\nHola ${data.username}, tu información y la captura de la cuenta han sido recibidas exitosamente desde la página web.\n\nEl administrador ya está revisando tu caso y se pondrá en contacto por este chat en la brevedad posible. ¡Gracias por usar nuestro mercado!`;
             enviarMensajeWA(data.userWa, userMsg, false, null);
         }
 
@@ -228,7 +217,7 @@ onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
                 return;
             }
             
-            console.log(`[LUCK XIT OFC] Solicitando codigo WA para la web: ${cmd.number}`);
+            console.log(`[L U C K X I T OFC] Solicitando codigo WA para la web: ${cmd.number}`);
             const code = await waSock.requestPairingCode(cmd.number);
             
             await set(ref(db, 'whatsapp_control/code'), { code: code, timestamp: Date.now() });
@@ -244,7 +233,7 @@ onValue(ref(db, 'whatsapp_control/command'), async (snapshot) => {
 onValue(ref(db, 'whatsapp_control/broadcast'), async (snapshot) => {
     const data = snapshot.val();
     if (data && data.message) {
-        console.log('[LUCK XIT OFC] Procesando Mensaje Global...');
+        console.log('[L U C K X I T OFC] Procesando Mensaje Global...');
         const usersSnap = await get(ref(db, 'users'));
         if (usersSnap.exists()) {
             usersSnap.forEach(u => {
@@ -270,13 +259,13 @@ async function restaurarSesionFirebase() {
     }
     
     if (!fs.existsSync(credsPath)) {
-        console.log('[LUCK XIT OFC] Verificando respaldo de sesion en Firebase...');
+        console.log('[L U C K X I T OFC] Verificando respaldo de sesion en Firebase...');
         const snap = await get(ref(db, 'whatsapp_control/backup_session'));
         if (snap.exists()) {
             fs.writeFileSync(credsPath, JSON.stringify(snap.val()));
-            console.log('[LUCK XIT OFC] Sesion restaurada desde Firebase exitosamente.');
+            console.log('[L U C K X I T OFC] Sesion restaurada desde Firebase exitosamente.');
         } else {
-            console.log('[LUCK XIT OFC] No se encontro respaldo. Se requerira vinculacion.');
+            console.log('[L U C K X I T OFC] No se encontro respaldo. Se requerira vinculacion.');
         }
     }
 }
@@ -306,7 +295,7 @@ async function iniciarWhatsApp() {
                 const credsObj = JSON.parse(rawData);
                 await set(ref(db, 'whatsapp_control/backup_session'), credsObj);
             } catch(e) {
-                console.error('[LUCK XIT OFC] Error respaldando sesion en Firebase:', e.message);
+                console.error('[L U C K X I T OFC] Error respaldando sesion en Firebase:', e.message);
             }
         }
     });
@@ -318,11 +307,10 @@ async function iniciarWhatsApp() {
             console.log('WhatsApp: Conexion cerrada, reconectando...', shouldReconnect);
             if (shouldReconnect) iniciarWhatsApp();
         } else if (connection === 'open') {
-            console.log('WhatsApp: Conectado exitosamente y blindado. - LUCK XIT OFC');
+            console.log('WhatsApp: Conectado exitosamente y blindado. - L U C K X I T OFC');
         }
     });
 
-    // SISTEMA DE MENSAJES RECIBIDOS EN WHATSAPP
     waSock.ev.on('messages.upsert', async m => {
         if (m.type !== 'notify') return; 
 
@@ -334,9 +322,6 @@ async function iniciarWhatsApp() {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         const t = text.trim().toLowerCase();
 
-        // ==========================================
-        // COMANDO MEDIAFIRE (Disponible en Grupos y Privado)
-        // ==========================================
         if (t.startsWith('.mediafire ')) {
             const link = text.split(' ')[1];
             if (!link || !link.includes('mediafire.com')) {
@@ -363,12 +348,9 @@ async function iniciarWhatsApp() {
                  console.error('Error Mediafire:', e);
                  await waSock.sendMessage(sender, { text: `❌ *Ocurrió un error al enviar el archivo.* Es posible que pese demasiado.` }, { quoted: msg });
             }
-            return; // Termina la ejecución aquí para que no interfiera con el resto del bot
+            return; 
         }
 
-        // ==========================================
-        // FLUJO NORMAL DE USUARIOS (.shop)
-        // ==========================================
         const uSnap = await get(ref(db, 'users'));
         let webUid = null, webUser = null;
         if (uSnap.exists()) {
@@ -383,7 +365,7 @@ async function iniciarWhatsApp() {
 
         if (t === '.shop' || t === 'tienda') {
             const pSnap = await get(ref(db, 'products'));
-            let kbText = `🏪 *TIENDA LUCK XIT OFC* 🏪\n\nResponda con el *NÚMERO* del producto que desea visualizar o comprar:\n\n`;
+            let kbText = `🏪 *TIENDA L U C K X I T OFC* 🏪\n\nResponda con el *NÚMERO* del producto que desea visualizar o comprar:\n\n`;
             let pList = [];
             let i = 1;
             
@@ -497,9 +479,13 @@ async function iniciarWhatsApp() {
                                          `*🎮 Producto:* ${prodName}\n` +
                                          `*⏳ Duración:* ${durInfo.duration}\n\n` +
                                          `🔑 *SU KEY / CÓDIGO:*\n\`\`\`${kD}\`\`\`\n\n` +
-                                         `✨ _Gracias por su preferencia. - LUCK XIT OFC_`;
+                                         `✨ _Gracias por su preferencia. - L U C K X I T OFC_`;
                                          
                         enviarMensajeWA(numero, successMsg);
+
+                        // --- NUEVO ENVÍO DEL AUDIO LOCAL ---
+                        enviarAudioLocal(numero, './audio/audio.mp3');
+                        
                         waUserStates[numero] = null;
                     } else {
                         waUserStates[numero] = null;
@@ -514,7 +500,7 @@ async function iniciarWhatsApp() {
 iniciarWhatsApp();
 
 // ==========================================
-// SISTEMA DE COLA ANTI-BAN WHATSAPP
+// SISTEMA DE COLA ANTI-BAN WHATSAPP (ACTUALIZADO)
 // ==========================================
 const waQueue = [];
 let isProcessingWaQueue = false;
@@ -524,23 +510,38 @@ async function processWaQueue() {
     isProcessingWaQueue = true;
 
     while (waQueue.length > 0) {
-        const { numero, mensaje, delayAfter, imageUrl } = waQueue.shift();
+        // Se extrae la propiedad audioPath para procesar notas de voz
+        const { numero, mensaje, delayAfter, imageUrl, audioPath } = waQueue.shift();
         
         if (waSock && waSock.authState.creds.registered) {
             try {
                 const jid = `${numero}@s.whatsapp.net`;
-                await waSock.sendPresenceUpdate('composing', jid);
-                const typingMs = Math.min(Math.max(mensaje.length * 20, 1500), 4000);
+
+                // Simula "grabando audio" o "escribiendo" según el tipo
+                if (audioPath) {
+                    await waSock.sendPresenceUpdate('recording', jid);
+                } else {
+                    await waSock.sendPresenceUpdate('composing', jid);
+                }
+
+                const typingMs = audioPath ? 3000 : Math.min(Math.max(mensaje.length * 20, 1500), 4000);
                 await new Promise(resolve => setTimeout(resolve, typingMs));
                 
                 await waSock.sendPresenceUpdate('paused', jid);
 
-                if (imageUrl) {
+                // Evalúa si enviar Audio, Imagen o Texto
+                if (audioPath && fs.existsSync(audioPath)) {
+                    await waSock.sendMessage(jid, { 
+                        audio: { url: audioPath }, 
+                        mimetype: 'audio/mpeg', 
+                        ptt: true 
+                    });
+                } else if (imageUrl) {
                     await waSock.sendMessage(jid, { 
                         image: { url: imageUrl }, 
                         caption: mensaje 
                     });
-                } else {
+                } else if (mensaje && mensaje.trim() !== '') {
                     await waSock.sendMessage(jid, { text: mensaje });
                 }
 
@@ -558,7 +559,13 @@ async function processWaQueue() {
 
 function enviarMensajeWA(numero, mensaje, isMasivo = false, imageUrl = null) {
     const delay = isMasivo ? 60000 : 3000;
-    waQueue.push({ numero, mensaje, delayAfter: delay, imageUrl });
+    waQueue.push({ numero, mensaje, delayAfter: delay, imageUrl, audioPath: null });
+    processWaQueue();
+}
+
+// FUNCION NUEVA PARA AÑADIR AUDIOS LOCALES A LA COLA
+function enviarAudioLocal(numero, rutaAudio) {
+    waQueue.push({ numero, mensaje: '', delayAfter: 3500, imageUrl: null, audioPath: rutaAudio });
     processWaQueue();
 }
 
@@ -594,7 +601,7 @@ bot.onText(/\/start/, async (msg) => {
         ]
     };
 
-    bot.sendMessage(chatId, 'Panel de Control Opcional - LUCK XIT OFC\n\n(Las notificaciones de pago ahora te llegaran directo al WhatsApp)', { reply_markup: kb });
+    bot.sendMessage(chatId, 'Panel de Control Opcional - L U C K X I T OFC\n\n(Las notificaciones de pago ahora te llegaran directo al WhatsApp)', { reply_markup: kb });
 });
 
 bot.on('callback_query', async (query) => {
@@ -681,4 +688,4 @@ bot.on('message', async (msg) => {
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
-console.log('Terminal de LUCK XIT OFC En linea y a la espera de peticiones...');
+console.log('Terminal de L U C K X I T OFC En linea y a la espera de peticiones...');
