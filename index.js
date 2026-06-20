@@ -6,7 +6,7 @@ const pino = require('pino');
 const sistemaRecargas = require('./recargas');
 
 // CONFIGURACIÓN MAS
-const token = '8275295427:AAHiO33nzZPgmglmSWo8eKVMKkEsCy19fSA';
+const token = '8752462228:AAE1gNtOF91wVLbHXG9ObW7Pa8rqeFHylUA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
 const TASA_COP = 3800; // Tasa fija establecid
