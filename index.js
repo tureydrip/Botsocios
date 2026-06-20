@@ -1,6 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { initializeApp } = require('firebase/app');
-const { getDatabase, ref, get, update, push, set, remove } = require('firebase/database');
+const admin = require('firebase-admin');
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const sistemaRecargas = require('./recargas');
@@ -11,20 +10,22 @@ const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
 const TASA_COP = 3800; // Tasa fija establecid
 
+// Inicialización de Firebase con credenciales de administrador (Service Account)
+const serviceAccount = require('./serviceAccountKey.json');
 
-const firebaseConfig = {
-    apiKey: "AIzaSyDoIGXJQ2NEgeUXCDHLSFc7YDA6EtDYUSg",
-    authDomain: "socios666-7056e.firebaseapp.com",
-    projectId: "socios666-7056e",
-    storageBucket: "socios666-7056e.firebasestorage.app",
-    messagingSenderId: "328433251001",
-    appId: "1:328433251001:web:141a5bf56127e323afe168",
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
     databaseURL: "https://socios666-7056e-default-rtdb.firebaseio.com"
-};
+});
+const db = admin.database();
 
-
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+// Adaptadores para mantener la compatibilidad con la sintaxis original (SDK Web)
+const ref = (dbInstance, path) => path ? dbInstance.ref(path) : dbInstance.ref();
+const get = (reference) => reference.get();
+const update = (reference, data) => reference.update(data);
+const push = (reference, data) => data ? reference.push(data) : reference.push();
+const set = (reference, data) => reference.set(data);
+const remove = (reference) => reference.remove();
 
 // Estados de interacción para los usuarios en WhatsApp
 const waUserStates = {};
@@ -434,7 +435,6 @@ function buildAdminKeyboard(adminData) {
         bottomRow.push({ text: '🔍 Ver Keys/Eliminar' }); 
         bottomRow.push({ text: '👮 Gest. Admins' }); 
         bottomRow.push({ text: '🌍 Gest. Países' }); 
-        bottomRow.push({ text: '📱 Vincular Bot WA' });
     }
     bottomRow.push({ text: '❌ Cancelar Acción' }); 
     kb.push(bottomRow);
@@ -526,20 +526,6 @@ bot.onText(/\/start(?: (.*))?/, async (msg, match) => {
     }
 
     const adminData = await getAdminData(tgId);
-
-    // SISTEMA DE VERIFICACIÓN OBLIGATORIA (SI NO ES ADMIN Y NO TIENE WA VINCULADO)
-    if (!adminData && !webUser.waLinked) {
-        const kb = {
-            inline_keyboard: [
-                [{text: '🇨🇴 Colombia (+57)', callback_data: 'walinkuser|57'}, {text: '🇲🇽 México (+52)', callback_data: 'walinkuser|52'}],
-                [{text: '🇪🇸 España (+34)', callback_data: 'walinkuser|34'}, {text: '🇦🇷 Argentina (+54)', callback_data: 'walinkuser|54'}],
-                [{text: '🌍 Otro País (Escribir código)', callback_data: 'walinkuser|otro'}]
-            ]
-        };
-        userStates[chatId] = { step: 'USER_WA_COUNTRY', data: {} };
-        return bot.sendMessage(chatId, '⚠️ *VERIFICACIÓN OBLIGATORIA*\n\nPara poder usar el bot, disfrutar de la tienda y recibir notificaciones de tu saldo, debes vincular tu número de WhatsApp activo.\n\n👇 Selecciona tu país de residencia:', {reply_markup: kb, parse_mode: 'Markdown'});
-    }
-
     const keyboard = adminData ? buildAdminKeyboard(adminData) : userKeyboard;
     
     let greeting = `🌌 Bienvenido a SociosXit, *${webUser.username}*.`;
@@ -588,93 +574,6 @@ bot.on('message', async (msg) => {
     if (text === '❌ Cancelar Acción') {
         userStates[chatId] = null;
         return bot.sendMessage(chatId, '✅ Acción cancelada. ¿Qué deseas hacer ahora?', keyboard);
-    }
-
-    // --- INTERCEPCIÓN DEL FLUJO DE VERIFICACIÓN WA USUARIO ---
-    if (!adminData && !webUser.waLinked && userStates[chatId]) {
-        const state = userStates[chatId];
-        
-        if (state.step === 'USER_WA_CUSTOM_COUNTRY') {
-            const code = text.replace('+', '').trim();
-            if (isNaN(code)) return bot.sendMessage(chatId, '❌ Escribe solo los números (Ej: 51)');
-            state.data.countryCode = code;
-            state.step = 'USER_WA_NUMBER';
-            return bot.sendMessage(chatId, `✅ Código +${code} guardado.\n\nEscribe tu número de WhatsApp **sin el código de país**:`, {parse_mode: 'Markdown'});
-        }
-        
-        if (state.step === 'USER_WA_NUMBER') {
-            const num = text.trim();
-            if (isNaN(num)) return bot.sendMessage(chatId, '❌ Escribe solo números.');
-            const fullNumber = `${state.data.countryCode}${num}`;
-            const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-            
-            state.data.expectedCode = verificationCode;
-            state.data.pendingWaNumber = fullNumber;
-            state.step = 'USER_WA_CODE';
-
-            if (waSock && waSock.authState.creds.registered) {
-                try {
-                    await enviarMensajeWA(fullNumber, `🤖 *Verificación SociosXit*\n\nTu código de seguridad es:\n*${verificationCode}*\n\nRegresa a Telegram e ingrésalo para activar tu cuenta.`);
-                    return bot.sendMessage(chatId, `✅ Hemos enviado un código a tu WhatsApp (+${fullNumber}).\n\n**Ingresa el código aquí para verificar tu cuenta:**`, {parse_mode: 'Markdown'});
-                } catch (err) {
-                    return bot.sendMessage(chatId, `❌ Hubo un error enviando el WhatsApp. Comprueba que el número sea correcto y vuelve a intentar usando /start.`);
-                }
-            } else {
-                return bot.sendMessage(chatId, `❌ El sistema de notificaciones de WhatsApp está fuera de servicio temporalmente.`);
-            }
-        }
-        
-        if (state.step === 'USER_WA_CODE') {
-            if (text.trim() === state.data.expectedCode) {
-                await update(ref(db), { [`users/${webUid}/waLinked`]: true, [`users/${webUid}/waNumber`]: state.data.pendingWaNumber });
-                userStates[chatId] = null;
-                enviarMensajeWA(state.data.pendingWaNumber, `🎉 *¡Cuenta Vinculada con Éxito!*\n\nBienvenido a SociosXit. Si quieres comprar desde aquí, simplemente escribe *.shop* en cualquier momento.`);
-                return bot.sendMessage(chatId, `🎉 *¡WhatsApp vinculado exitosamente!*\n\nYa tienes acceso completo. Escribe /start para ver el menú.`, {parse_mode: 'Markdown'});
-            } else {
-                return bot.sendMessage(chatId, `❌ Código incorrecto. Verifica en tu WhatsApp e intenta de nuevo:`);
-            }
-        }
-        return; // BLOQUEA AL USUARIO PARA QUE NO HAGA NADA MÁS HASTA VERIFICARSE
-    }
-
-    // --- INTERCEPCIÓN DEL FLUJO DE VINCULACIÓN WA ADMIN ---
-    if (adminData && userStates[chatId]) {
-        const state = userStates[chatId];
-        
-        if (state.step === 'ADMIN_WA_CUSTOM_COUNTRY') {
-            const code = text.replace('+', '').trim();
-            if (isNaN(code)) return bot.sendMessage(chatId, '❌ Escribe solo los números (Ej: 51)');
-            state.data.countryCode = code;
-            state.step = 'ADMIN_WA_NUMBER';
-            return bot.sendMessage(chatId, `✅ Código +${code} guardado.\n\nEscribe el número que se convertirá en el Bot de WhatsApp **sin el código de país**:`);
-        }
-        
-        if (state.step === 'ADMIN_WA_NUMBER') {
-            const num = text.trim();
-            if (isNaN(num)) return bot.sendMessage(chatId, '❌ Escribe solo números.');
-            const fullNumber = `${state.data.countryCode}${num}`;
-            
-            bot.sendMessage(chatId, `⏳ Solicitando Código a WhatsApp para el número +${fullNumber}... Por favor espera.`);
-            
-            try {
-                if (waSock && waSock.authState.creds.registered) {
-                    userStates[chatId] = null;
-                    return bot.sendMessage(chatId, '⚠️ El bot de WhatsApp ya se encuentra registrado y vinculado con un número. Cierra sesión primero desde WhatsApp si deseas cambiarlo.');
-                }
-                setTimeout(async () => {
-                    try {
-                        const code = await waSock.requestPairingCode(fullNumber);
-                        bot.sendMessage(chatId, `📲 *Tu código de vinculación para WhatsApp es:*\n\n\`${code}\`\n\n_(Toca el código para copiarlo)_\n\nIngresa este código en "Dispositivos Vinculados" > "Vincular con el número de teléfono" en tu WhatsApp destino.`, { parse_mode: 'Markdown', ...keyboard });
-                    } catch(err) {
-                        bot.sendMessage(chatId, '❌ Error al solicitar código: ' + err.message, keyboard);
-                    }
-                }, 3000);
-            } catch (error) {
-                bot.sendMessage(chatId, '❌ Error al solicitar código: ' + error.message, keyboard);
-            }
-            userStates[chatId] = null;
-            return;
-        }
     }
 
     if (msg.photo && userStates[chatId]) {
@@ -1375,16 +1274,6 @@ bot.on('message', async (msg) => {
 
     // --- BOTONES DEL PANEL ADMIN ---
     if (adminData) {
-        if (text === '📱 Vincular Bot WA' && adminData.isSuper) {
-            const kb = {
-                inline_keyboard: [
-                    [{text: '🇨🇴 Colombia (+57)', callback_data: 'walinkadmin|57'}, {text: '🇲🇽 México (+52)', callback_data: 'walinkadmin|52'}],
-                    [{text: '🌍 Otro País (Escribir código)', callback_data: 'walinkadmin|otro'}]
-                ]
-            };
-            return bot.sendMessage(chatId, '📱 *VINCULAR BOT A WHATSAPP*\n\nSelecciona el país del número destino que alojará el bot:', {parse_mode: 'Markdown', reply_markup: kb});
-        }
-
         if (text === '📦 Crear Producto' && (adminData.isSuper || adminData.perms.products)) {
             userStates[chatId] = { step: 'CREATE_PROD_NAME', data: {} };
             return bot.sendMessage(chatId, 'Escribe el **Nombre General** del nuevo producto (Ej: Netflix):', { parse_mode: 'Markdown', ...cancelKeyboard });
@@ -1576,30 +1465,6 @@ bot.on('callback_query', async (query) => {
     
     bot.answerCallbackQuery(query.id);
 
-    // --- INTERCEPCIÓN DE VINCULACIÓN WA USUARIO ---
-    if (data.startsWith('walinkuser|')) {
-        const codPais = data.split('|')[1];
-        if (codPais === 'otro') {
-            userStates[chatId] = { step: 'USER_WA_CUSTOM_COUNTRY', data: {} };
-            return bot.editMessageText('🌍 Escribe el **Código de tu País** (sin el +, solo números. Ejemplo: 51 para Perú):', {chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'});
-        } else {
-            userStates[chatId] = { step: 'USER_WA_NUMBER', data: { countryCode: codPais } };
-            return bot.editMessageText(`✅ País seleccionado (+${codPais}).\n\nAhora, escribe tu **número de WhatsApp** (SIN el código de país):`, {chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'});
-        }
-    }
-
-    // --- INTERCEPCIÓN DE VINCULACIÓN WA ADMIN ---
-    if (data.startsWith('walinkadmin|')) {
-        const codPais = data.split('|')[1];
-        if (codPais === 'otro') {
-            userStates[chatId] = { step: 'ADMIN_WA_CUSTOM_COUNTRY', data: {} };
-            return bot.editMessageText('🌍 Escribe el **Código de País** del Bot:', {chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'});
-        } else {
-            userStates[chatId] = { step: 'ADMIN_WA_NUMBER', data: { countryCode: codPais } };
-            return bot.editMessageText(`✅ País (+${codPais}).\n\nEscribe el **número del Bot de WhatsApp** (sin el código de país):`, {chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'});
-        }
-    }
-    
     const webUid = await getAuthUser(tgId); 
     if (!webUid) return bot.sendMessage(chatId, `🛑 Acceso revocado o cuenta no vinculada.`);
     
@@ -1990,10 +1855,8 @@ bot.on('callback_query', async (query) => {
         // --- INTERCEPCIÓN AVISOS RECARGAS ---
         if (data.startsWith('ok_rech|') && (adminData.isSuper || adminData.perms.balance)) {
             const uid = data.split('|')[1];
-            // Se ejecuta la lógica original de tu recarga
             const result = await sistemaRecargas.aprobarRecarga(bot, db, chatId, query.message.message_id, uid, adminUsername, tgId, notifySuperAdmin);
             
-            // Mandamos notificación a WA
             const uS = await get(ref(db, `users/${uid}`));
             if(uS.exists() && uS.val().waLinked) {
                 enviarMensajeWA(uS.val().waNumber, `🌟 *¡TU RECARGA HA SIDO APROBADA!*\n\nTu pago ha sido validado exitosamente y tu saldo ya está disponible en el bot de Telegram. ¡Gracias por elegir SociosXit! 💸🛍️`);
@@ -2002,10 +1865,8 @@ bot.on('callback_query', async (query) => {
         }
         if (data.startsWith('no_rech|') && (adminData.isSuper || adminData.perms.balance)) {
             const uid = data.split('|')[1];
-            // Se ejecuta la lógica original de tu recarga
             const result = await sistemaRecargas.rechazarRecarga(bot, db, chatId, query.message.message_id, uid, adminUsername, tgId, notifySuperAdmin);
             
-            // Mandamos notificación a WA
             const uS = await get(ref(db, `users/${uid}`));
             if(uS.exists() && uS.val().waLinked) {
                 enviarMensajeWA(uS.val().waNumber, `❌ *AVISO DE RECARGA*\n\nLo sentimos, tu solicitud de recarga ha sido rechazada porque el comprobante no es válido.\nSi crees que es un error, por favor contacta a soporte. 🛡️`);
