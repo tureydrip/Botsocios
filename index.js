@@ -1,5 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
-const admin = require('firebase-admin');
+const { initializeApp } = require('firebase/app');
+const { getDatabase, ref, get, update, push, set, remove } = require('firebase/database');
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const sistemaRecargas = require('./recargas');
@@ -8,27 +9,24 @@ const sistemaRecargas = require('./recargas');
 const token = '8752462228:AAE1gNtOF91wVLbHXG9ObW7Pa8rqeFHylUA';
 const bot = new TelegramBot(token, { polling: true });
 const SUPER_ADMIN_ID = 7710633235; 
-const TASA_COP = 3800; // Tasa fija establecid
+const TASA_COP = 3800; // Tasa fija establecida
 
-// Inicialización de Firebase con credenciales de administrador (Service Account)
-const serviceAccount = require('./serviceAccountKey.json');
-
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+const firebaseConfig = {
+    apiKey: "AIzaSyDoIGXJQ2NEgeUXCDHLSFc7YDA6EtDYUSg",
+    authDomain: "socios666-7056e.firebaseapp.com",
+    projectId: "socios666-7056e",
+    storageBucket: "socios666-7056e.firebasestorage.app",
+    messagingSenderId: "328433251001",
+    appId: "1:328433251001:web:141a5bf56127e323afe168",
     databaseURL: "https://socios666-7056e-default-rtdb.firebaseio.com"
-});
-const db = admin.database();
+};
 
-// Adaptadores para mantener la compatibilidad con la sintaxis original (SDK Web)
-const ref = (dbInstance, path) => path ? dbInstance.ref(path) : dbInstance.ref();
-const get = (reference) => reference.get();
-const update = (reference, data) => reference.update(data);
-const push = (reference, data) => data ? reference.push(data) : reference.push();
-const set = (reference, data) => reference.set(data);
-const remove = (reference) => reference.remove();
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
 
 // Estados de interacción para los usuarios en WhatsApp
 const waUserStates = {};
+
 
 // ==========================================
 // MÓDULO DE WHATSAPP BOT (BAILEYS OPTIMIZADO)
